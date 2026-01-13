@@ -1,0 +1,484 @@
+{
+  "general": {
+    "title": "GeneralConfig",
+    "type": "object",
+    "default": {
+      "help_t2i": true
+    },
+    "description": "通用设置",
+    "items": {
+      "help_t2i": {
+        "default": true,
+        "description": "将画图帮助信息生成为图片",
+        "title": "Help T2I",
+        "type": "bool"
+      }
+    }
+  },
+  "request": {
+    "title": "RequestConfig",
+    "type": "object",
+    "default": {
+      "base_url": "https://image.novelai.net",
+      "tokens": [],
+      "connect_timeout": 5.0,
+      "read_timeout": 120.0,
+      "max_concurrent": 2,
+      "max_queue_size": 10,
+      "retry_times": 0,
+      "retry_wait": 1.0,
+      "opus_free_mode": false
+    },
+    "description": "请求设置",
+    "items": {
+      "base_url": {
+        "default": "https://image.novelai.net",
+        "description": "画图接口地址",
+        "title": "Base Url",
+        "type": "string"
+      },
+      "tokens": {
+        "default": [],
+        "description": "授权 Token 列表",
+        "hint": "支持配置多个 Token，系统会轮询使用。请使用 NovelAI 官方 Persistent API Token（以 pst- 开头）",
+        "title": "Tokens",
+        "type": "list",
+        "items": {
+          "type": "string"
+        }
+      },
+      "connect_timeout": {
+        "default": 5,
+        "description": "请求画图接口时的连接超时时间（秒）",
+        "exclusiveMinimum": 0.0,
+        "hint": "值需大于 0",
+        "title": "Connect Timeout",
+        "type": "float"
+      },
+      "read_timeout": {
+        "default": 120,
+        "description": "请求画图接口时的读取超时时间（秒）",
+        "exclusiveMinimum": 0.0,
+        "hint": "值需大于 0，相当于从连接到后端起，到等待画图完成的超时时间",
+        "title": "Read Timeout",
+        "type": "float"
+      },
+      "max_concurrent": {
+        "default": 2,
+        "description": "最大并发请求数",
+        "minimum": 0,
+        "maximum": 10,
+        "hint": "同时处理的最大请求数量，超出的请求会排队等待。建议设置为 1-3；若填 0 会自动按 1 处理",
+        "title": "Max Concurrent",
+        "type": "int"
+      },
+      "max_queue_size": {
+        "default": 10,
+        "description": "最大队列长度",
+        "minimum": 1,
+        "maximum": 50,
+        "hint": "排队等待的最大请求数量，超出时新请求会被拒绝。设置为 0 表示不限制",
+        "title": "Max Queue Size",
+        "type": "int"
+      },
+      "retry_times": {
+        "default": 0,
+        "description": "画图失败重试次数",
+        "minimum": 0,
+        "maximum": 10,
+        "hint": "当 /nai、nai画图、自动画图 的生成请求出现错误时，内部自动重试的次数（不外显）。0 表示不重试。",
+        "title": "Retry Times",
+        "type": "int"
+      },
+      "retry_wait": {
+        "default": 1.0,
+        "description": "重试等待时间（秒）",
+        "minimum": 0.0,
+        "maximum": 60.0,
+        "hint": "每次重试前等待的时间（秒）。仅在 retry_times>0 时生效。",
+        "title": "Retry Wait",
+        "type": "float"
+      },
+      "opus_free_mode": {
+        "default": false,
+        "description": "Opus 免费模式（小图模式）",
+        "hint": "开启后强制使用符合 Opus 免费生成条件的参数：分辨率 ≤1024x1024、步数 ≤28。适用于 Opus 订阅用户，可无限免费生成",
+        "title": "Opus Free Mode",
+        "type": "bool"
+      }
+    }
+  },
+  "llm": {
+    "title": "LLMConfig",
+    "type": "object",
+    "default": {
+      "advanced_arg_generation_provider": "",
+      "default_prompt": "best quality, very aesthetic, absurdres",
+      "default_negative_prompt": "blurry, lowres, error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, multiple views, logo, too many watermarks",
+      "allow_i2i": true,
+      "allow_vibe_transfer": true,
+      "regex_replacements": [],
+      "enable_vision": false
+    },
+    "description": "LLM 设置",
+    "items": {
+      "advanced_arg_generation_provider": {
+        "_special": "select_provider",
+        "default": "",
+        "description": "用于生成高级画图参数的模型",
+        "title": "Advanced Arg Generation Provider",
+        "type": "string"
+      },
+      "default_prompt": {
+        "default": "best quality, very aesthetic, absurdres",
+        "description": "AI 自主画图时的默认正向提示词",
+        "hint": "AI 生成的提示词会与此默认提示词合并",
+        "title": "Default Prompt",
+        "type": "text"
+      },
+      "default_negative_prompt": {
+        "default": "blurry, lowres, error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, multiple views, logo, too many watermarks",
+        "description": "AI 自主画图时的默认反向提示词",
+        "title": "Default Negative Prompt",
+        "type": "text"
+      },
+      "allow_i2i": {
+        "default": true,
+        "description": "允许 AI 使用图生图功能",
+        "title": "Allow I2I",
+        "type": "bool"
+      },
+      "allow_vibe_transfer": {
+        "default": true,
+        "description": "允许 AI 使用氛围转移功能",
+        "title": "Allow Vibe Transfer",
+        "type": "bool"
+      },
+      "regex_replacements": {
+        "default": [],
+        "description": "正则清洗表达式",
+        "hint": "用于清洗 AI 生成内容的正则表达式，每行一个\n格式：正则表达式|||替换内容（如果省略替换内容则删除匹配项）\n例如：```markdown.*?```|||  会删除所有markdown代码块",
+        "title": "Regex Replacements",
+        "type": "list",
+        "items": {
+          "type": "string"
+        }
+      },
+      "enable_vision": {
+        "default": false,
+        "description": "启用视觉输入：在画图参数生成时附带用户图片",
+        "hint": "开启后，nai画图/自动画图会将用户消息中的图片以多模态 image_url 方式传给用于高级参数生成的模型（需要模型支持 vision）。",
+        "title": "Enable Vision",
+        "type": "bool"
+      }
+    }
+  },
+  "permission": {
+    "title": "PermissionConfig",
+    "type": "object",
+    "default": {
+      "whitelist_only_fields": [],
+      "vibe_transfer_image_limit": 2,
+      "width_limit": 1920,
+      "height_limit": 1920,
+      "steps_limit": 23
+    },
+    "description": "权限设置",
+    "items": {
+      "whitelist_only_fields": {
+        "default": [],
+        "description": "白名单用户专用字段",
+        "hint": "此处填写的参数只有白名单用户可以使用，若不在此处填写的参数，则所有用户都可以使用",
+        "items": {
+          "type": "string"
+        },
+        "options": [
+          "model",
+          "negative",
+          "artist",
+          "size",
+          "seed",
+          "steps",
+          "scale",
+          "cfg",
+          "sampler",
+          "noise_schedule",
+          "other",
+          "i2i",
+          "i2i_force",
+          "i2i_cl",
+          "vibe_transfer",
+          "vibe_transfer_info_extract",
+          "vibe_transfer_ref_strength",
+          "role",
+          "character_keep",
+          "character_keep_vibe",
+          "character_keep_strength"
+        ],
+        "title": "Whitelist Only Fields",
+        "type": "list"
+      },
+      "vibe_transfer_image_limit": {
+        "default": 2,
+        "description": "氛围转移图片数量上限",
+        "exclusiveMinimum": 0,
+        "title": "Vibe Transfer Image Limit",
+        "type": "int"
+      },
+      "width_limit": {
+        "default": 1920,
+        "description": "图片宽度上限",
+        "title": "Width Limit",
+        "type": "int"
+      },
+      "height_limit": {
+        "default": 1920,
+        "description": "图片高度上限",
+        "title": "Height Limit",
+        "type": "int"
+      },
+      "steps_limit": {
+        "default": 23,
+        "description": "采样步数上限",
+        "hint": "值需在 1 到 50 之间",
+        "maximum": 50,
+        "minimum": 1,
+        "title": "Steps Limit",
+        "type": "int"
+      }
+    }
+  },
+  "quota": {
+    "title": "QuotaConfig",
+    "type": "object",
+    "default": {
+      "enable_quota": true,
+      "checkin_min_quota": 1,
+      "checkin_max_quota": 3,
+      "checkin_quota_limit": 10
+    },
+    "description": "额度设置",
+    "items": {
+      "enable_quota": {
+        "default": true,
+        "description": "启用额度系统",
+        "hint": "关闭后所有用户均可无限使用（黑名单仍然生效）",
+        "title": "Enable Quota",
+        "type": "bool"
+      },
+      "checkin_min_quota": {
+        "default": 1,
+        "description": "签到获得的最少次数",
+        "hint": "值需大于等于 0",
+        "minimum": 0,
+        "title": "Checkin Min Quota",
+        "type": "int"
+      },
+      "checkin_max_quota": {
+        "default": 3,
+        "description": "签到获得的最多次数",
+        "hint": "值需大于等于 1，且不小于最少次数",
+        "minimum": 1,
+        "title": "Checkin Max Quota",
+        "type": "int"
+      },
+      "checkin_quota_limit": {
+        "default": 10,
+        "description": "签到可累积的额度上限",
+        "hint": "用户额度达到此上限后签到不再获得次数（管理员设置的额度不受限制）",
+        "minimum": 1,
+        "title": "Checkin Quota Limit",
+        "type": "int"
+      }
+    }
+  },
+  "defaults": {
+    "title": "DefaultsConfig",
+    "type": "object",
+    "default": {
+      "model": "nai-diffusion-4-5-full",
+      "prompt": "best quality, very aesthetic, absurdres",
+      "negative_prompt": "blurry, lowres, error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, multiple views, logo, too many watermarks",
+      "size": "832x1216",
+      "portrait_size": "832x1216",
+      "landscape_size": "1216x832",
+      "square_size": "1024x1024",
+      "steps": 23,
+      "scale": 5.0,
+      "cfg": 0.0,
+      "sampler": "k_euler_ancestral",
+      "noise_schedule": "karras",
+      "other": "0",
+      "i2i_force": 0.6,
+      "i2i_cl": 1,
+      "vibe_transfer_info_extract": 1.0,
+      "vibe_transfer_ref_strength": 0.5,
+      "character_keep_vibe": false,
+      "character_keep_strength": 0.5
+    },
+    "description": "默认值设置",
+    "items": {
+      "model": {
+        "default": "nai-diffusion-4-5-full",
+        "description": "默认模型",
+        "options": [
+          "nai-diffusion-3",
+          "nai-diffusion-furry-3",
+          "nai-diffusion-4-full",
+          "nai-diffusion-4-curated-preview",
+          "nai-diffusion-4-5-curated",
+          "nai-diffusion-4-5-full"
+        ],
+        "title": "Model",
+        "type": "string"
+      },
+      "prompt": {
+        "default": "best quality, very aesthetic, absurdres",
+        "description": "默认正向提示词",
+        "hint": "使用 nai 命令时的默认正向提示词",
+        "title": "Prompt",
+        "type": "text"
+      },
+      "negative_prompt": {
+        "default": "blurry, lowres, error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, multiple views, logo, too many watermarks",
+        "description": "默认反向提示词",
+        "title": "Negative Prompt",
+        "type": "text"
+      },
+      "size": {
+        "default": "832x1216",
+        "description": "默认出图尺寸",
+        "hint": "需按照 832x1216 这样的格式填写",
+        "title": "Size",
+        "type": "string"
+      },
+      "portrait_size": {
+        "default": "832x1216",
+        "description": "预置竖图尺寸",
+        "hint": "需按照 832x1216 这样的格式填写",
+        "title": "Portrait Size",
+        "type": "string"
+      },
+      "landscape_size": {
+        "default": "1216x832",
+        "description": "预置横图尺寸",
+        "hint": "需按照 1216x832 这样的格式填写",
+        "title": "Landscape Size",
+        "type": "string"
+      },
+      "square_size": {
+        "default": "1024x1024",
+        "description": "预置方图尺寸",
+        "hint": "需按照 1024x1024 这样的格式填写",
+        "title": "Square Size",
+        "type": "string"
+      },
+      "steps": {
+        "default": 23,
+        "description": "默认采样步数",
+        "hint": "值需在 1 到 50 之间，且请不要大于上面设置的步数上限",
+        "maximum": 50,
+        "minimum": 1,
+        "title": "Steps",
+        "type": "int"
+      },
+      "scale": {
+        "default": 5,
+        "description": "默认提示词引导值",
+        "title": "Scale",
+        "type": "float"
+      },
+      "cfg": {
+        "default": 0,
+        "description": "默认缩放引导值",
+        "title": "Cfg",
+        "type": "float"
+      },
+      "sampler": {
+        "default": "k_euler_ancestral",
+        "description": "默认采样器",
+        "options": [
+          "k_euler_ancestral",
+          "k_euler",
+          "k_dpmpp_2s_ancestral",
+          "k_dpmpp_2m_sde",
+          "k_dpmpp_2m",
+          "k_dpmpp_sde"
+        ],
+        "title": "Sampler",
+        "type": "string"
+      },
+      "noise_schedule": {
+        "default": "karras",
+        "description": "默认噪声调度",
+        "options": [
+          "karras",
+          "native",
+          "exponential",
+          "polyexponential"
+        ],
+        "title": "Noise Schedule",
+        "type": "string"
+      },
+      "other": {
+        "default": "0",
+        "description": "默认高级配置",
+        "options": [
+          "0",
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+        ],
+        "title": "Other",
+        "type": "string"
+      },
+      "i2i_force": {
+        "default": 0.6,
+        "description": "默认重绘力度",
+        "title": "I2I Force",
+        "type": "float"
+      },
+      "i2i_cl": {
+        "default": 1,
+        "description": "默认图片处理",
+        "title": "I2I Cl",
+        "type": "int"
+      },
+      "vibe_transfer_info_extract": {
+        "default": 1,
+        "description": "默认氛围转移信息提取度",
+        "hint": "值需在 0 到 1 之间",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "title": "Vibe Transfer Info Extract",
+        "type": "float"
+      },
+      "vibe_transfer_ref_strength": {
+        "default": 0.5,
+        "description": "默认氛围转移参考强度",
+        "hint": "值需在 0 到 1 之间",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "title": "Vibe Transfer Ref Strength",
+        "type": "float"
+      },
+      "character_keep_vibe": {
+        "default": false,
+        "description": "默认角色保持氛围",
+        "title": "Character Keep Vibe",
+        "type": "bool"
+      },
+      "character_keep_strength": {
+        "default": 0.5,
+        "description": "默认角色保持参考强度",
+        "hint": "值需在 0 到 1 之间",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "title": "Character Keep Strength",
+        "type": "float"
+      }
+    }
+  }
+}
