@@ -1,0 +1,20 @@
+{
+  "users": {
+    "2014456684": {
+      "quota": 3,
+      "last_checkin_date": "2026-01-05"
+    },
+    "1254322753": {
+      "quota": 0,
+      "last_checkin_date": "2026-01-03"
+    },
+    "1987561642": {
+      "quota": 5,
+      "last_checkin_date": "2026-01-13"
+    }
+  },
+  "whitelist": [
+    "2014456684"
+  ],
+  "blacklist": []
+}
