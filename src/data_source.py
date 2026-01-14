@@ -130,6 +130,13 @@ def _sanitize_for_log(obj: Any) -> Any:
 def _extract_base64_data(data_uri: str) -> str:
     """从 data URI 中提取纯 base64 数据"""
     if data_uri.startswith("data:"):
+        if "," not in data_uri:
+            logger.warning(
+                "[nai] Malformed data URI (no comma separator); keep as-is. len=%s prefix=%r",
+                len(data_uri),
+                data_uri[:32],
+            )
+            return data_uri
         # 格式: data:image/jpeg;base64,xxxxx
         if ",base64," in data_uri:
             return data_uri.split(",base64,", 1)[1]

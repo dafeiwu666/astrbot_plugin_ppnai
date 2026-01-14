@@ -10,6 +10,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from astrbot.api import logger
+
 
 class AutoDrawSession(BaseModel):
     enabled: bool = True
@@ -38,7 +40,11 @@ class AutoDrawStoreManager:
             try:
                 raw = json.loads(self.data_file.read_text("utf-8"))
                 self._store = AutoDrawStore.model_validate(raw)
-            except Exception:
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    f"[nai] Failed to load auto-draw store; reset to default. file={self.data_file}",
+                    exc_info=e,
+                )
                 self._store = AutoDrawStore()
         else:
             self._store = AutoDrawStore()

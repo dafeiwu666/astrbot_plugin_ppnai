@@ -155,6 +155,25 @@ def _unwrap_tool_context(tool_context: object) -> tuple[Context, AstrMessageEven
     if isinstance(ctx, Context) and isinstance(event, AstrMessageEvent):
         return ctx, event
 
+    def _safe_attr_type(obj: object, name: str) -> str:
+        try:
+            v = getattr(obj, name)
+        except Exception:  # noqa: BLE001
+            return "<error>"
+        return type(v).__name__
+
+    debug_info = {
+        "tool_context_type": type(tool_context).__name__,
+        "has_get_astr_context": callable(getattr(tool_context, "get_astr_context", None)),
+        "has_astr_context": hasattr(tool_context, "astr_context"),
+        "astr_ctx_type": type(astr_ctx).__name__,
+        "astr_ctx_has_context": hasattr(astr_ctx, "context"),
+        "astr_ctx_has_event": hasattr(astr_ctx, "event"),
+        "astr_ctx_context_type": _safe_attr_type(astr_ctx, "context"),
+        "astr_ctx_event_type": _safe_attr_type(astr_ctx, "event"),
+    }
+    logger.warning(f"[nai] Tool context unwrap failed: {debug_info}")
+
     raise RuntimeError(
         "Unable to locate AstrBot Context/AstrMessageEvent on tool context. "
         "Expected tool_context.get_astr_context()/tool_context.astr_context -> object with 'context' and 'event'. "

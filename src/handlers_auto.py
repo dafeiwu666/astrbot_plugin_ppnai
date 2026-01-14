@@ -190,7 +190,12 @@ async def handle_llm_response_auto_draw(plugin, event, resp: LLMResponse):
         plugin._create_background_task(coro, name="nai:auto_draw")
     else:
         task = asyncio.create_task(coro)
-        task.add_done_callback(lambda t: t.exception())
+        def _log_task_exception(t: asyncio.Task):
+            exc = t.exception()
+            if exc is not None:
+                logger.error("[nai] Auto draw task failed", exc_info=exc)
+
+        task.add_done_callback(_log_task_exception)
 
 
 async def _auto_draw_generate(
