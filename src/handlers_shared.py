@@ -38,42 +38,38 @@ def _extract_params_from_text(text: str, treat_non_kv_as_tag: bool) -> list[tupl
     return res
 
 
-def merge_nai_params(
-    preset_contents: list[str],
-    direct_text: str = "",
-) -> tuple[str, dict[str, str], set[str]]:
-    """Merge preset contents and direct kv params into a unified raw param text.
-
-    Returns:
-    - merged_raw: final k=v lines
-    - wrappers: prompt wrappers (prepend/append tag/negative)
-    - explicit_ids: canonical param ids explicitly set by user/presets
-
-    Notes:
-    - `direct_text` supports filtering out non-params (e.g. `ds=`) and preset selectors (`s1=...`).
-    """
-
-    appliers_map = req_model_assembler.appliers_map
-
+def _canon_factory(appliers_map):
     def canon(k: str) -> str | None:
         infos = appliers_map.get(k)
         return infos[0].id if infos else None
 
-    direct_pairs: list[tuple[str, str]] = []
-    if direct_text:
-        for raw_line in direct_text.splitlines():
-            line = raw_line.strip()
-            if not line or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            k = k.strip()
-            v = v.strip()
-            if k == "ds":
-                continue
-            if k.startswith("s") and k[1:].isdigit():
-                continue
-            direct_pairs.append((k, v))
+    return canon
 
+
+def _extract_direct_pairs(direct_text: str) -> list[tuple[str, str]]:
+    direct_pairs: list[tuple[str, str]] = []
+    if not direct_text:
+        return direct_pairs
+
+    for raw_line in direct_text.splitlines():
+        line = raw_line.strip()
+        if not line or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k = k.strip()
+        v = v.strip()
+        if k == "ds":
+            continue
+        if k.startswith("s") and k[1:].isdigit():
+            continue
+        direct_pairs.append((k, v))
+    return direct_pairs
+
+
+def _collect_param_groups(
+    preset_contents: list[str],
+    direct_pairs: list[tuple[str, str]],
+) -> list[list[tuple[str, str]]]:
     groups: list[list[tuple[str, str]]] = []
     for p in reversed(preset_contents):
         pairs = _extract_params_from_text(p, treat_non_kv_as_tag=True)
@@ -81,7 +77,20 @@ def merge_nai_params(
             groups.append(pairs)
     if direct_pairs:
         groups.append(direct_pairs)
+    return groups
 
+
+def _merge_groups(groups: list[list[tuple[str, str]]], canon) -> tuple[
+    dict[str, str],
+    list[str],
+    list[str],
+    list[str],
+    list[str],
+    list[str],
+    list[str],
+    list[str],
+    set[str],
+]:
     merged_scalar: dict[str, str] = {}
     tag_parts: list[str] = []
     negative_parts: list[str] = []
@@ -118,6 +127,30 @@ def merge_nai_params(
             else:
                 merged_scalar[cid] = raw_v
 
+    return (
+        merged_scalar,
+        tag_parts,
+        negative_parts,
+        prepend_tag_parts,
+        append_tag_parts,
+        prepend_negative_parts,
+        append_negative_parts,
+        multi_lines,
+        explicit_ids,
+    )
+
+
+def _build_merged_lines(
+    *,
+    merged_scalar: dict[str, str],
+    tag_parts: list[str],
+    negative_parts: list[str],
+    prepend_tag_parts: list[str],
+    append_tag_parts: list[str],
+    prepend_negative_parts: list[str],
+    append_negative_parts: list[str],
+    multi_lines: list[str],
+) -> list[str]:
     merged_lines: list[str] = []
     if tag_parts:
         merged_lines.append(f"tag={', '.join(tag_parts)}")
@@ -134,6 +167,51 @@ def merge_nai_params(
     if negative_parts:
         merged_lines.append(f"negative={', '.join(negative_parts)}")
     merged_lines.extend(multi_lines)
+    return merged_lines
+
+
+def merge_nai_params(
+    preset_contents: list[str],
+    direct_text: str = "",
+) -> tuple[str, dict[str, str], set[str]]:
+    """Merge preset contents and direct kv params into a unified raw param text.
+
+    Returns:
+    - merged_raw: final k=v lines
+    - wrappers: prompt wrappers (prepend/append tag/negative)
+    - explicit_ids: canonical param ids explicitly set by user/presets
+
+    Notes:
+    - `direct_text` supports filtering out non-params (e.g. `ds=`) and preset selectors (`s1=...`).
+    """
+
+    appliers_map = req_model_assembler.appliers_map
+    canon = _canon_factory(appliers_map)
+    direct_pairs = _extract_direct_pairs(direct_text)
+    groups = _collect_param_groups(preset_contents, direct_pairs)
+
+    (
+        merged_scalar,
+        tag_parts,
+        negative_parts,
+        prepend_tag_parts,
+        append_tag_parts,
+        prepend_negative_parts,
+        append_negative_parts,
+        multi_lines,
+        explicit_ids,
+    ) = _merge_groups(groups, canon)
+
+    merged_lines = _build_merged_lines(
+        merged_scalar=merged_scalar,
+        tag_parts=tag_parts,
+        negative_parts=negative_parts,
+        prepend_tag_parts=prepend_tag_parts,
+        append_tag_parts=append_tag_parts,
+        prepend_negative_parts=prepend_negative_parts,
+        append_negative_parts=append_negative_parts,
+        multi_lines=multi_lines,
+    )
 
     wrappers = {
         "prepend_tag": ", ".join(prepend_tag_parts),

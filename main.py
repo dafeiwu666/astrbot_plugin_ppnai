@@ -431,6 +431,10 @@ class Plugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = Config.model_validate(config)
+
+        # Background tasks spawned by handlers (auto-draw etc.).
+        # We track them so plugin shutdown can cancel/await cleanly.
+        self._background_tasks: set[asyncio.Task] = set()
         
         # 初始化用户管理器和预设管理器，数据存储在插件目录下的 data 文件夹
         data_dir: Path = StarTools.get_data_dir(PLUGIN_NAME)
@@ -495,6 +499,16 @@ class Plugin(Star):
 
     @override
     async def terminate(self):
+        # Cancel/await background tasks (best-effort).
+        tasks = [t for t in self._background_tasks if not t.done()]
+        for t in tasks:
+            t.cancel()
+        if tasks:
+            try:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            except Exception:  # noqa: BLE001
+                logger.exception("Failed while awaiting background tasks")
+
         try:
             await self._auto_draw_store.asave_from_runtime(self.auto_draw_info)
         except Exception:  # noqa: BLE001
@@ -503,6 +517,27 @@ class Plugin(Star):
             await aclose_shared_client()
         except Exception:  # noqa: BLE001
             logger.exception("Failed to close shared http client")
+
+    def _create_background_task(self, coro, *, name: str | None = None) -> asyncio.Task:
+        """Create and track a background task to avoid lost exceptions/leaks."""
+
+        task = asyncio.create_task(coro, name=name)
+        self._background_tasks.add(task)
+
+        def _on_done(t: asyncio.Task):
+            self._background_tasks.discard(t)
+            try:
+                exc = t.exception()
+            except asyncio.CancelledError:
+                return
+            except Exception:  # noqa: BLE001
+                logger.exception("Background task callback failed")
+                return
+            if exc is not None:
+                logger.exception("Background task failed", exc_info=exc)
+
+        task.add_done_callback(_on_done)
+        return task
 
     async def generate_help(self, umo: str) -> str:
         """读取 USAGE.md 文件内容作为帮助信息（避免同步磁盘 I/O 阻塞事件循环）"""

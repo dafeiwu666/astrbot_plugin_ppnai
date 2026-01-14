@@ -19,7 +19,7 @@ from .queue_flow import QueueRejected, acquire_generation_semaphore, reserve_que
 async def handle_auto_draw_off(plugin, event) -> AsyncIterator:
     plugin.auto_draw_info.pop(event.unified_msg_origin, None)
     if hasattr(plugin, "persist_auto_draw_info"):
-           await plugin.persist_auto_draw_info()
+    await plugin.persist_auto_draw_info()
     yield event.plain_result("❌ 自动画图已关闭")
 
 
@@ -46,7 +46,7 @@ async def handle_auto_draw_on(plugin, event) -> AsyncIterator:
         "opener_user_id": user_id,
     }
     if hasattr(plugin, "persist_auto_draw_info"):
-            await plugin.persist_auto_draw_info()
+        await plugin.persist_auto_draw_info()
 
     if preset_names:
         preset_str = ", ".join(f"#{name}" for name in preset_names)
@@ -91,7 +91,7 @@ async def handle_auto_draw(plugin, event) -> AsyncIterator:
             "opener_user_id": user_id,
         }
         if hasattr(plugin, "persist_auto_draw_info"):
-                await plugin.persist_auto_draw_info()
+            await plugin.persist_auto_draw_info()
 
         preset_str = ", ".join(f"#{name}" for name in preset_names)
         yield event.plain_result(
@@ -164,7 +164,7 @@ async def handle_llm_response_auto_draw(plugin, event, resp: LLMResponse):
             )
             plugin.auto_draw_info[umo] = None
             if hasattr(plugin, "persist_auto_draw_info"):
-                    await plugin.persist_auto_draw_info()
+                await plugin.persist_auto_draw_info()
             return
 
     preset_contents: list[str] = []
@@ -178,16 +178,19 @@ async def handle_llm_response_auto_draw(plugin, event, resp: LLMResponse):
         f"presets={presets}, opener={opener_user_id}"
     )
 
-    asyncio.create_task(
-        _auto_draw_generate(
-            plugin,
-            event,
-            ai_response,
-            preset_contents,
-            opener_user_id,
-            is_whitelisted,
-        )
+    coro = _auto_draw_generate(
+        plugin,
+        event,
+        ai_response,
+        preset_contents,
+        opener_user_id,
+        is_whitelisted,
     )
+    if hasattr(plugin, "_create_background_task"):
+        plugin._create_background_task(coro, name="nai:auto_draw")
+    else:
+        task = asyncio.create_task(coro)
+        task.add_done_callback(lambda t: t.exception())
 
 
 async def _auto_draw_generate(
