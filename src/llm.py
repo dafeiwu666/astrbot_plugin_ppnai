@@ -99,8 +99,10 @@ async def llm_generate_prepare_req(
             ", there may have a internal error"
         )
 
-    # 应用正则清洗
-    message = apply_regex_replacements(message, config.llm.regex_replacements)
+    # 应用正则清洗（避免复杂正则阻塞事件循环）
+    message = await asyncio.to_thread(
+        apply_regex_replacements, message, config.llm.regex_replacements
+    )
 
     try:
         args = STNaiGenerateImageAdvancedArgs.model_validate_json(message)

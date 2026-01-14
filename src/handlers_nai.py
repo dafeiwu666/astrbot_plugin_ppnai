@@ -214,11 +214,11 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
         help_msg = plugin.generate_help(event.unified_msg_origin)
         if plugin.config.general.help_t2i:
             try:
-                image_paths = await plugin._render_markdown_to_images(help_msg)
-                if image_paths:
-                    yield event.chain_result([Image.fromFileSystem(p) for p in image_paths])
+                pages = await plugin._render_markdown_to_images(help_msg)
+                if pages:
+                    yield event.chain_result([Image.fromBytes(b) for b in pages])
                 else:
-                    yield event.image_result(await plugin.text_to_image(help_msg))
+                    yield event.plain_result(help_msg)
             except Exception:
                 logger.exception("帮助图片渲染失败")
                 yield event.plain_result(help_msg)

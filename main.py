@@ -2,6 +2,7 @@ import asyncio
 import os
 import uuid
 from asyncio import Semaphore
+from io import BytesIO
 from pathlib import Path
 from typing import Annotated
 
@@ -37,6 +38,26 @@ from .src.user_manager import UserManager
 from .src.preset_manager import PresetManager
 from .src.queue_manager import get_shared_queue
 from .src.handlers_nai import handle_cmd_nai, handle_nai_draw
+from .src.handlers_admin import (
+    handle_add_blacklist,
+    handle_add_quota,
+    handle_add_whitelist,
+    handle_admin_query_user,
+    handle_checkin,
+    handle_list_blacklist,
+    handle_list_whitelist,
+    handle_query_quota,
+    handle_queue_status,
+    handle_remove_blacklist,
+    handle_remove_whitelist,
+    handle_set_quota,
+)
+from .src.handlers_preset import (
+    handle_preset_add,
+    handle_preset_delete,
+    handle_preset_list,
+    handle_preset_view,
+)
 from .src.handlers_auto import (
     handle_auto_draw,
     handle_auto_draw_off,
@@ -74,6 +95,35 @@ def _default_help_text() -> str:
     return "# 泡泡画图\n\n帮助文档加载中，请稍后重试。"
 
 
+def _cleanup_legacy_help_cache() -> int:
+    """清理旧版本遗留的帮助图片缓存（help_*.png）。
+
+    旧实现会把 help markdown 渲染落盘到 data_dir/cache 下，若未清理可能无限增长。
+    当前版本不再落盘，但仍在启动时做一次保底清理。
+    """
+    try:
+        data_dir: Path = StarTools.get_data_dir(PLUGIN_NAME)
+        cache_dir = data_dir / "cache"
+        if not cache_dir.exists():
+            return 0
+
+        removed = 0
+        for p in cache_dir.glob("help_*.png"):
+            if not p.is_file():
+                continue
+            try:
+                p.unlink()
+                removed += 1
+            except FileNotFoundError:
+                continue
+            except Exception as ex:  # noqa: BLE001
+                logger.debug(f"Failed to delete legacy help cache file: {p} ({ex!r})")
+        return removed
+    except Exception as ex:  # noqa: BLE001
+        logger.debug(f"Legacy help cache cleanup failed: {ex!r}")
+        return 0
+
+
 def _unwrap_tool_context(
     wrapper: ContextWrapper[AstrAgentContext],
 ) -> tuple[Context, AstrMessageEvent]:
@@ -83,9 +133,32 @@ def _unwrap_tool_context(
     small bounded search for Context + AstrMessageEvent.
     """
 
+    # 1) Prefer direct/stable paths (no graph traversal)
+    direct_ctx = getattr(wrapper, "context", None) or getattr(wrapper, "ctx", None)
+    direct_event = getattr(wrapper, "event", None)
+
+    agent_ctx = getattr(wrapper, "agent_ctx", None) or getattr(wrapper, "astr_context", None)
+    if direct_event is None and agent_ctx is not None:
+        direct_event = getattr(agent_ctx, "event", None) or getattr(agent_ctx, "message_event", None)
+    if direct_ctx is None and agent_ctx is not None:
+        direct_ctx = getattr(agent_ctx, "context", None) or getattr(agent_ctx, "ctx", None)
+
+    if isinstance(direct_ctx, Context) and isinstance(direct_event, AstrMessageEvent):
+        return direct_ctx, direct_event
+
     def _iter_children(obj: object) -> list[object]:
         res: list[object] = []
-        for name in ("context", "ctx", "event", "agent_ctx", "astr_context"):
+        for name in (
+            "context",
+            "ctx",
+            "event",
+            "agent_ctx",
+            "astr_context",
+            "message_event",
+            "tool_context",
+            "run_context",
+            "wrapper",
+        ):
             try:
                 v = getattr(obj, name)
             except AttributeError:
@@ -117,7 +190,18 @@ def _unwrap_tool_context(
             next_frontier.extend(_iter_children(obj))
         frontier = next_frontier
 
-    raise RuntimeError("Unable to locate AstrBot Context/AstrMessageEvent on tool context")
+    hints: dict[str, str] = {}
+    for k in ("context", "ctx", "event", "agent_ctx", "astr_context", "message_event"):
+        if hasattr(wrapper, k):
+            try:
+                v = getattr(wrapper, k)
+            except Exception:  # noqa: BLE001
+                continue
+            hints[k] = type(v).__name__
+    raise RuntimeError(
+        "Unable to locate AstrBot Context/AstrMessageEvent on tool context; "
+        f"wrapper_type={type(wrapper).__name__}, hints={hints}"
+    )
 
 WAITING_REPLIES = [
     "少女绘画中……",
@@ -327,7 +411,6 @@ class Plugin(Star):
         self.auto_draw_info: dict[str, dict | None] = {}
 
         self._usage_md_cache: str | None = None
-        self._usage_md_loading: bool = False
         
         # Token 轮询索引
         self._token_index = 0
@@ -341,6 +424,15 @@ class Plugin(Star):
     async def initialize(self):
         # 在事件循环中初始化信号量（共享队列状态）
         self._queue.ensure(self.config.request.max_concurrent)
+
+        # 清理旧版本遗留的 help 图片缓存（best-effort，避免磁盘膨胀）
+        try:
+            removed = await asyncio.to_thread(_cleanup_legacy_help_cache)
+            if removed:
+                logger.info(f"[nai] 已清理旧帮助缓存图片 {removed} 个")
+        except Exception:  # noqa: BLE001
+            logger.debug("[nai] Legacy help cache cleanup skipped")
+
         # 避免在事件循环中做同步文件 I/O
         self._usage_md_cache = await asyncio.to_thread(load_usage_md)
 
@@ -378,44 +470,18 @@ class Plugin(Star):
         """读取 USAGE.md 文件内容作为帮助信息"""
         if self._usage_md_cache:
             return self._usage_md_cache
-
-        # 不要在事件循环中触发同步读文件：如果还没缓存好，先返回占位文本并异步加载
         try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            # 没有事件循环（极少数场景），允许同步读取
-            try:
-                self._usage_md_cache = load_usage_md()
-                return self._usage_md_cache
-            except Exception:  # noqa: BLE001
-                return _default_help_text()
-
-        if not self._usage_md_loading:
-            self._usage_md_loading = True
-
-            async def _reload_usage():
-                try:
-                    self._usage_md_cache = await asyncio.to_thread(load_usage_md)
-                finally:
-                    self._usage_md_loading = False
-
-            loop.create_task(_reload_usage())
-
-        return _default_help_text()
+            self._usage_md_cache = load_usage_md()
+            return self._usage_md_cache
+        except Exception:  # noqa: BLE001
+            return _default_help_text()
 
     async def persist_auto_draw_info(self) -> None:
         """Persist auto_draw_info to disk without blocking event loop (best-effort)."""
         await self._auto_draw_store.asave_from_runtime(self.auto_draw_info)
     
-    async def _render_markdown_to_images(self, markdown_content: str) -> list[str]:
-        """使用 pillowmd 将 Markdown 渲染为图片列表
-        
-        Args:
-            markdown_content: Markdown 内容
-            
-        Returns:
-            图片文件路径列表
-        """
+    async def _render_markdown_to_images(self, markdown_content: str) -> list[bytes]:
+        """使用 pillowmd 将 Markdown 渲染为 PNG bytes 列表（不落盘，避免临时文件泄漏）"""
         try:
             import pillowmd
             
@@ -446,21 +512,17 @@ class Plugin(Star):
             else:
                 # 回退处理
                 images = [render_result]
-            
-            # 保存到本地缓存目录
-            cache_dir: Path = StarTools.get_data_dir(PLUGIN_NAME) / "cache"
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            
-            saved_paths = []
-            session_id = uuid.uuid4().hex[:8]
-            
-            for i, img in enumerate(images):
-                # 生成唯一文件名
-                image_path = cache_dir / f"help_{session_id}_{i}.png"
-                await asyncio.to_thread(img.save, str(image_path), format="PNG")
-                saved_paths.append(str(image_path))
 
-            return saved_paths
+            async def _img_to_png_bytes(img) -> bytes:
+                def _do_save() -> bytes:
+                    buf = BytesIO()
+                    img.save(buf, format="PNG")
+                    return buf.getvalue()
+
+                return await asyncio.to_thread(_do_save)
+
+            pages = await asyncio.gather(*[_img_to_png_bytes(img) for img in images])
+            return list(pages)
             
         except ImportError:
             logger.warning("pillowmd 未安装，回退到远程渲染")
@@ -694,318 +756,102 @@ class Plugin(Star):
     @event_filter.command("nai签到")
     async def cmd_checkin(self, event: AstrMessageEvent):
         """每日签到获取画图额度"""
-        user_id = self._get_user_id(event)
-        success, gained, message = await asyncio.to_thread(self.user_manager.checkin, user_id, self.config)
-        yield event.plain_result(message)
+        async for result in handle_checkin(self, event):
+            yield result
     
     @event_filter.command("nai队列")
     async def cmd_queue_status(self, event: AstrMessageEvent):
         """查询当前队列状态"""
-        max_concurrent = self.config.request.max_concurrent
-        max_queue = self.config.request.max_queue_size
-        
-        # 计算当前处理中的数量
-        processing = max(self._queue.queue_count - self._queue.waiting_count, 0)
-        waiting = self._queue.waiting_count
-        
-        status_lines = [
-            "📊 当前队列状态",
-            f"• 正在处理：{processing}/{max_concurrent}",
-            f"• 排队等待：{waiting}/{max_queue if max_queue > 0 else '∞'}",
-        ]
-        
-        if self._queue.queue_count == 0:
-            status_lines.append("\n✅ 队列空闲，可以立即开始画图")
-        elif max_queue > 0 and waiting >= max_queue:
-            status_lines.append("\n⚠️ 队列已满，新请求将被拒绝")
-        else:
-            if max_queue > 0:
-                status_lines.append(f"\n📝 还可加入 {max_queue - waiting} 个请求")
-        
-        yield event.plain_result("\n".join(status_lines))
+        async for result in handle_queue_status(self, event):
+            yield result
     
     @event_filter.command("查询额度")
     async def cmd_query_quota(self, event: AstrMessageEvent):
         """查询自己的画图额度"""
-        user_id = self._get_user_id(event)
-        
-        if await asyncio.to_thread(self.user_manager.is_blacklisted, user_id):
-            yield event.plain_result("你已被加入黑名单")
-            return
-        
-        if await asyncio.to_thread(self.user_manager.is_whitelisted, user_id):
-            yield event.plain_result("你在白名单中，可无限使用画图功能")
-            return
-        
-        if not self.config.quota.enable_quota:
-            yield event.plain_result("当前未启用额度系统，可无限使用画图功能")
-            return
-        
-        quota = await asyncio.to_thread(self.user_manager.get_quota, user_id)
-        yield event.plain_result(f"你当前剩余 {quota} 次画图额度")
+        async for result in handle_query_quota(self, event):
+            yield result
 
     # ========== 管理员命令 ==========
     
     @event_filter.command("nai黑名单添加")
     async def cmd_add_blacklist(self, event: AstrMessageEvent):
         """将用户添加到黑名单（管理员）"""
-        if not self._check_permission(event):
-            yield event.plain_result("权限不足，仅管理员可使用此命令")
-            return
-        
-        args = event.message_str.removeprefix("nai黑名单添加").strip()
-        if not args:
-            yield event.plain_result("请指定用户ID，例如：nai黑名单添加 123456")
-            return
-        
-        user_id = args.split()[0]
-        if await asyncio.to_thread(self.user_manager.add_to_blacklist, user_id):
-            yield event.plain_result(f"已将用户 {user_id} 添加到黑名单")
-        else:
-            yield event.plain_result(f"用户 {user_id} 已在黑名单中")
+        async for result in handle_add_blacklist(self, event):
+            yield result
     
     @event_filter.command("nai黑名单移除")
     async def cmd_remove_blacklist(self, event: AstrMessageEvent):
         """将用户从黑名单移除（管理员）"""
-        if not self._check_permission(event):
-            yield event.plain_result("权限不足，仅管理员可使用此命令")
-            return
-        
-        args = event.message_str.removeprefix("nai黑名单移除").strip()
-        if not args:
-            yield event.plain_result("请指定用户ID，例如：nai黑名单移除 123456")
-            return
-        
-        user_id = args.split()[0]
-        if await asyncio.to_thread(self.user_manager.remove_from_blacklist, user_id):
-            yield event.plain_result(f"已将用户 {user_id} 从黑名单移除")
-        else:
-            yield event.plain_result(f"用户 {user_id} 不在黑名单中")
+        async for result in handle_remove_blacklist(self, event):
+            yield result
     
     @event_filter.command("nai黑名单列表")
     async def cmd_list_blacklist(self, event: AstrMessageEvent):
         """查看黑名单列表（管理员）"""
-        if not self._check_permission(event):
-            yield event.plain_result("权限不足，仅管理员可使用此命令")
-            return
-        
-        blacklist = await asyncio.to_thread(self.user_manager.get_blacklist)
-        if not blacklist:
-            yield event.plain_result("黑名单为空")
-        else:
-            yield event.plain_result("黑名单用户：\n" + "\n".join(blacklist))
+        async for result in handle_list_blacklist(self, event):
+            yield result
     
     @event_filter.command("nai白名单添加")
     async def cmd_add_whitelist(self, event: AstrMessageEvent):
         """将用户添加到白名单（管理员）"""
-        if not self._check_permission(event):
-            yield event.plain_result("权限不足，仅管理员可使用此命令")
-            return
-        
-        args = event.message_str.removeprefix("nai白名单添加").strip()
-        if not args:
-            yield event.plain_result("请指定用户ID，例如：nai白名单添加 123456")
-            return
-        
-        user_id = args.split()[0]
-        if await asyncio.to_thread(self.user_manager.add_to_whitelist, user_id):
-            yield event.plain_result(f"已将用户 {user_id} 添加到白名单")
-        else:
-            yield event.plain_result(f"用户 {user_id} 已在白名单中")
+        async for result in handle_add_whitelist(self, event):
+            yield result
     
     @event_filter.command("nai白名单移除")
     async def cmd_remove_whitelist(self, event: AstrMessageEvent):
         """将用户从白名单移除（管理员）"""
-        if not self._check_permission(event):
-            yield event.plain_result("权限不足，仅管理员可使用此命令")
-            return
-        
-        args = event.message_str.removeprefix("nai白名单移除").strip()
-        if not args:
-            yield event.plain_result("请指定用户ID，例如：nai白名单移除 123456")
-            return
-        
-        user_id = args.split()[0]
-        if await asyncio.to_thread(self.user_manager.remove_from_whitelist, user_id):
-            yield event.plain_result(f"已将用户 {user_id} 从白名单移除")
-        else:
-            yield event.plain_result(f"用户 {user_id} 不在白名单中")
+        async for result in handle_remove_whitelist(self, event):
+            yield result
     
     @event_filter.command("nai白名单列表")
     async def cmd_list_whitelist(self, event: AstrMessageEvent):
         """查看白名单列表（管理员）"""
-        if not self._check_permission(event):
-            yield event.plain_result("权限不足，仅管理员可使用此命令")
-            return
-        
-        whitelist = await asyncio.to_thread(self.user_manager.get_whitelist)
-        if not whitelist:
-            yield event.plain_result("白名单为空")
-        else:
-            yield event.plain_result("白名单用户：\n" + "\n".join(whitelist))
+        async for result in handle_list_whitelist(self, event):
+            yield result
     
     @event_filter.command("nai查询用户")
     async def cmd_admin_query_user(self, event: AstrMessageEvent):
         """查询用户额度（管理员）"""
-        if not self._check_permission(event):
-            yield event.plain_result("权限不足，仅管理员可使用此命令")
-            return
-        
-        args = event.message_str.removeprefix("nai查询用户").strip()
-        if not args:
-            yield event.plain_result("请指定用户ID，例如：nai查询用户 123456")
-            return
-        
-        user_id = args.split()[0]
-        quota = await asyncio.to_thread(self.user_manager.get_quota, user_id)
-        
-        status = ""
-        if await asyncio.to_thread(self.user_manager.is_blacklisted, user_id):
-            status = "（黑名单）"
-        elif await asyncio.to_thread(self.user_manager.is_whitelisted, user_id):
-            status = "（白名单）"
-        
-        yield event.plain_result(f"用户 {user_id}{status} 的额度：{quota} 次")
+        async for result in handle_admin_query_user(self, event):
+            yield result
     
     @event_filter.command("nai设置额度")
     async def cmd_set_quota(self, event: AstrMessageEvent):
         """设置用户额度（管理员）"""
-        if not self._check_permission(event):
-            yield event.plain_result("权限不足，仅管理员可使用此命令")
-            return
-        
-        args = event.message_str.removeprefix("nai设置额度").strip().split()
-        if len(args) < 2:
-            yield event.plain_result("请指定用户ID和额度，例如：nai设置额度 123456 100")
-            return
-        
-        user_id = args[0]
-        try:
-            quota = int(args[1])
-        except ValueError:
-            yield event.plain_result("额度必须是整数")
-            return
-        
-        await asyncio.to_thread(self.user_manager.set_quota, user_id, quota)
-        yield event.plain_result(f"已将用户 {user_id} 的额度设置为 {quota} 次")
+        async for result in handle_set_quota(self, event):
+            yield result
     
     @event_filter.command("nai增加额度")
     async def cmd_add_quota(self, event: AstrMessageEvent):
         """增加用户额度（管理员）"""
-        if not self._check_permission(event):
-            yield event.plain_result("权限不足，仅管理员可使用此命令")
-            return
-        
-        args = event.message_str.removeprefix("nai增加额度").strip().split()
-        if len(args) < 2:
-            yield event.plain_result("请指定用户ID和额度，例如：nai增加额度 123456 10")
-            return
-        
-        user_id = args[0]
-        try:
-            amount = int(args[1])
-        except ValueError:
-            yield event.plain_result("额度必须是整数")
-            return
-        
-        new_quota = await asyncio.to_thread(self.user_manager.add_quota, user_id, amount)
-        yield event.plain_result(f"已为用户 {user_id} 增加 {amount} 次额度，当前额度：{new_quota} 次")
+        async for result in handle_add_quota(self, event):
+            yield result
 
     # ========== 预设命令 ==========
     
     @event_filter.command("nai预设列表")
     async def cmd_preset_list(self, event: AstrMessageEvent):
         """查看预设列表"""
-        presets = await asyncio.to_thread(self.preset_manager.list_presets)
-        if not presets:
-            yield event.plain_result("暂无预设，管理员可使用 nai预设添加 命令添加预设")
-            return
-        
-        result = "📝 预设列表：\n" + "\n".join(f"• {title}" for title in presets)
-        result += "\n\n使用方式：\nnai\ns1=预设名"
-        yield event.plain_result(result)
+        async for result in handle_preset_list(self, event):
+            yield result
     
     @event_filter.command("nai预设查看")
     async def cmd_preset_view(self, event: AstrMessageEvent):
         """查看预设详细内容"""
-        args = event.message_str.removeprefix("nai预设查看").strip()
-        if not args:
-            yield event.plain_result("请指定预设名称，例如：nai预设查看 猫娘")
-            return
-        
-        title = args.split()[0]
-        preset = await asyncio.to_thread(self.preset_manager.get_preset, title)
-        
-        if preset is None:
-            yield event.plain_result(f"预设 #{title} 不存在")
-            return
-        
-        # 使用代码块包裹以防平台解析错误或截断
-        yield event.plain_result(f"📝 预设 #{title}\n\n```\n{preset.content}\n```")
+        async for result in handle_preset_view(self, event):
+            yield result
     
     @event_filter.command("nai预设添加")
     async def cmd_preset_add(self, event: AstrMessageEvent):
         """添加预设（管理员）"""
-        if not self._check_permission(event):
-            yield event.plain_result("权限不足，仅管理员可使用此命令")
-            return
-        
-        # 解析：第一行是 "nai预设添加 标题"，后面的行是内容
-        full_text = event.message_str
-        lines = full_text.split('\n', 1)
-        
-        # 从第一行提取标题
-        first_line = lines[0].removeprefix("nai预设添加").strip()
-        if not first_line:
-            yield event.plain_result(
-                "请指定预设标题和内容，格式：\n"
-                "nai预设添加 标题名\n"
-                "这里是预设内容..."
-            )
-            return
-        
-        title = first_line
-        
-        # 获取内容（第二行开始）
-        if len(lines) < 2 or not lines[1].strip():
-            yield event.plain_result(
-                f"请在标题后换行添加预设内容，格式：\n"
-                f"nai预设添加 {title}\n"
-                f"这里是预设内容..."
-            )
-            return
-        
-        content = lines[1]
-        
-        # 检查是否已存在
-        if await asyncio.to_thread(self.preset_manager.get_preset, title) is not None:
-            yield event.plain_result(
-                f"预设 #{title} 已存在，如需修改请先删除再添加"
-            )
-            return
-        
-        await asyncio.to_thread(self.preset_manager.add_preset, title, content)
-        yield event.plain_result(f"✅ 预设 #{title} 添加成功！\n\n预览：\n{content[:200]}{'...' if len(content) > 200 else ''}")
+        async for result in handle_preset_add(self, event):
+            yield result
     
     @event_filter.command("nai预设删除")
     async def cmd_preset_delete(self, event: AstrMessageEvent):
         """删除预设（管理员）"""
-        if not self._check_permission(event):
-            yield event.plain_result("权限不足，仅管理员可使用此命令")
-            return
-        
-        args = event.message_str.removeprefix("nai预设删除").strip()
-        if not args:
-            yield event.plain_result("请指定预设名称，例如：nai预设删除 猫娘")
-            return
-        
-        title = args.split()[0]
-        
-        deleted = await asyncio.to_thread(self.preset_manager.delete_preset, title)
-        if deleted:
-            yield event.plain_result(f"✅ 预设 #{title} 已删除")
-        else:
-            yield event.plain_result(f"预设 #{title} 不存在")
+        async for result in handle_preset_delete(self, event):
+            yield result
 
     # ========== nai画图命令（直接调用插件AI） ==========
     
