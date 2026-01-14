@@ -211,7 +211,7 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
         return
 
     if req is None:
-        help_msg = plugin.generate_help(event.unified_msg_origin)
+        help_msg = await plugin.generate_help(event.unified_msg_origin)
         if plugin.config.general.help_t2i:
             try:
                 pages = await plugin._render_markdown_to_images(help_msg)

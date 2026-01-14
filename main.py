@@ -504,12 +504,12 @@ class Plugin(Star):
         except Exception:  # noqa: BLE001
             logger.exception("Failed to close shared http client")
 
-    def generate_help(self, umo: str) -> str:
-        """读取 USAGE.md 文件内容作为帮助信息"""
+    async def generate_help(self, umo: str) -> str:
+        """读取 USAGE.md 文件内容作为帮助信息（避免同步磁盘 I/O 阻塞事件循环）"""
         if self._usage_md_cache:
             return self._usage_md_cache
         try:
-            self._usage_md_cache = load_usage_md()
+            self._usage_md_cache = await asyncio.to_thread(load_usage_md)
             return self._usage_md_cache
         except Exception:  # noqa: BLE001
             return _default_help_text()
@@ -522,17 +522,17 @@ class Plugin(Star):
         """使用 pillowmd 将 Markdown 渲染为 PNG bytes 列表（不落盘，避免临时文件泄漏）"""
         try:
             import pillowmd
-            
-            # 样式路径
-            style_path = Path("data/styles/夏日冲浪")
-            
-            if style_path.exists():
-                # 使用自定义样式
-                style = pillowmd.LoadMarkdownStyles(str(style_path))
-            else:
-                # 使用默认样式
+
+            def _load_style():
+                # 样式路径
+                style_path = Path("data/styles/夏日冲浪")
+                if style_path.exists():
+                    return pillowmd.LoadMarkdownStyles(str(style_path))
                 logger.warning(f"样式路径不存在: {style_path}，使用默认样式")
-                style = pillowmd.MdStyle()
+                return pillowmd.MdStyle()
+
+            # pillowmd 样式加载可能涉及磁盘 I/O，放到线程池避免阻塞事件循环
+            style = await asyncio.to_thread(_load_style)
             
             # 使用异步接口渲染
             # autoPage=True 支持长图分页
