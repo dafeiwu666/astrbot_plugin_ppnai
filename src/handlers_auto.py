@@ -27,7 +27,7 @@ async def handle_auto_draw_on(plugin, event) -> AsyncIterator:
     umo = event.unified_msg_origin
     user_id = plugin._get_user_id(event)
 
-    if plugin.user_manager.is_blacklisted(user_id):
+    if await asyncio.to_thread(plugin.user_manager.is_blacklisted, user_id):
         yield event.plain_result("你已被加入黑名单，无法开启自动画图")
         return
 
@@ -35,7 +35,7 @@ async def handle_auto_draw_on(plugin, event) -> AsyncIterator:
     preset_names, _ = plugin._parse_presets_from_params(raw_input)
 
     for preset_name in preset_names:
-        preset = plugin.preset_manager.get_preset(preset_name)
+        preset = await asyncio.to_thread(plugin.preset_manager.get_preset, preset_name)
         if preset is None:
             yield event.plain_result(f"预设 {preset_name} 不存在，使用 nai预设列表 查看可用预设")
             return
@@ -70,7 +70,7 @@ async def handle_auto_draw(plugin, event) -> AsyncIterator:
     raw_input = event.message_str.removeprefix("nai自动画图").strip()
 
     if raw_input:
-        if plugin.user_manager.is_blacklisted(user_id):
+        if await asyncio.to_thread(plugin.user_manager.is_blacklisted, user_id):
             yield event.plain_result("你已被加入黑名单，无法开启自动画图")
             return
 
@@ -80,7 +80,7 @@ async def handle_auto_draw(plugin, event) -> AsyncIterator:
             return
 
         for preset_name in preset_names:
-            preset = plugin.preset_manager.get_preset(preset_name)
+            preset = await asyncio.to_thread(plugin.preset_manager.get_preset, preset_name)
             if preset is None:
                 yield event.plain_result(f"预设 {preset_name} 不存在，使用 nai预设列表 查看可用预设")
                 return
@@ -111,8 +111,8 @@ async def handle_auto_draw(plugin, event) -> AsyncIterator:
 
     presets = current.get("presets", [])
     opener_id = current.get("opener_user_id", "")
-    opener_quota = plugin.user_manager.get_quota(opener_id)
-    is_whitelisted = plugin.user_manager.is_whitelisted(opener_id)
+    opener_quota = await asyncio.to_thread(plugin.user_manager.get_quota, opener_id)
+    is_whitelisted = await asyncio.to_thread(plugin.user_manager.is_whitelisted, opener_id)
 
     status_parts = ["当前会话自动画图状态：✅ 开启"]
     if presets:
@@ -146,15 +146,15 @@ async def handle_llm_response_auto_draw(plugin, event, resp: LLMResponse):
     if not ai_response or len(ai_response.strip()) < 10:
         return
 
-    if plugin.user_manager.is_blacklisted(opener_user_id):
+    if await asyncio.to_thread(plugin.user_manager.is_blacklisted, opener_user_id):
         logger.debug(f"[nai] Auto draw: opener {opener_user_id} is blacklisted, skipping")
         return
 
-    is_whitelisted = plugin.user_manager.is_whitelisted(opener_user_id)
+    is_whitelisted = await asyncio.to_thread(plugin.user_manager.is_whitelisted, opener_user_id)
     quota_enabled = plugin.config.quota.enable_quota
 
     if quota_enabled and not is_whitelisted:
-        can_use, reason = plugin.user_manager.can_use(opener_user_id)
+        can_use, reason = await asyncio.to_thread(plugin.user_manager.can_use, opener_user_id)
         if not can_use:
             await event.send(
                 event.plain_result(
@@ -169,7 +169,7 @@ async def handle_llm_response_auto_draw(plugin, event, resp: LLMResponse):
 
     preset_contents: list[str] = []
     for preset_name in presets:
-        preset = plugin.preset_manager.get_preset(preset_name)
+        preset = await asyncio.to_thread(plugin.preset_manager.get_preset, preset_name)
         if preset:
             preset_contents.append(preset.content)
 

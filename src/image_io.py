@@ -3,7 +3,6 @@
 import asyncio
 import base64
 import io
-from typing import Iterable
 
 from PIL import Image as PILImage
 
@@ -113,23 +112,9 @@ def convert_to_jpeg_for_character_keep(image_b64: str) -> str:
     return result
 
 
-def convert_multi_image_to_jpeg(images: Iterable[str]) -> list[str]:
-    """Sync batch conversion.
-
-    This is CPU-bound; prefer `aconvert_multi_image_to_jpeg()` in async flows.
-    """
-    return [convert_to_jpeg_for_character_keep(img) for img in images]
-
-
 async def aconvert_to_jpeg_for_character_keep(image_b64: str) -> str:
     """Async wrapper for `convert_to_jpeg_for_character_keep` (runs in a thread)."""
     return await asyncio.to_thread(convert_to_jpeg_for_character_keep, image_b64)
-
-
-async def aconvert_multi_image_to_jpeg(images: Iterable[str]) -> list[str]:
-    """Async batch wrapper (runs the whole batch in a thread)."""
-    imgs = list(images)
-    return await asyncio.to_thread(convert_multi_image_to_jpeg, imgs)
 
 
 async def resolve_image_as_jpeg(image: Image) -> str:
