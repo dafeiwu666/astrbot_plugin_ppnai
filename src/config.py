@@ -430,6 +430,14 @@ class Config(BaseModel):
 
 
 if __name__ == "__main__":
+    # 开发辅助：生成 _conf_schema.json。
+    # 为避免误触发（例如有人手滑执行了本文件），需要显式环境变量开关。
+    import os
+
+    if os.environ.get("ASTRBOT_GEN_CONF_SCHEMA") != "1":
+        raise SystemExit(
+            "Set env ASTRBOT_GEN_CONF_SCHEMA=1 to generate _conf_schema.json"
+        )
     import json
     from pathlib import Path
 

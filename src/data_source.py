@@ -5,6 +5,7 @@ NovelAI 官方 API 数据源模块
 """
 
 import io
+import asyncio
 import json
 import random
 import re
@@ -52,10 +53,7 @@ def create_client_from_config(config: "Config", token: str = ""):
         "Referer": "https://novelai.net",
     }
     
-    # 官方 API 使用 Bearer Token 认证
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    
+    # 注意：Bearer Token 建议按“每次请求”附带，避免共享 Client 时混用。
     return AsyncClient(
         base_url=config.request.base_url,
         headers=headers,
@@ -63,6 +61,48 @@ def create_client_from_config(config: "Config", token: str = ""):
             config.request.connect_timeout, read=config.request.read_timeout
         ),
     )
+
+
+_shared_client: AsyncClient | None = None
+_shared_client_sig: tuple[str, float, float] | None = None
+_shared_client_lock = asyncio.Lock()
+
+
+def _client_signature(config: "Config") -> tuple[str, float, float]:
+    return (
+        str(config.request.base_url),
+        float(config.request.connect_timeout),
+        float(config.request.read_timeout),
+    )
+
+
+async def get_shared_client(config: "Config") -> AsyncClient:
+    """Get a process-wide shared client for connection pooling."""
+    global _shared_client, _shared_client_sig
+    sig = _client_signature(config)
+    async with _shared_client_lock:
+        if _shared_client is not None and _shared_client_sig == sig:
+            return _shared_client
+        if _shared_client is not None:
+            try:
+                await _shared_client.aclose()
+            except Exception:  # noqa: BLE001
+                pass
+        _shared_client = create_client_from_config(config)
+        _shared_client_sig = sig
+        return _shared_client
+
+
+async def aclose_shared_client() -> None:
+    global _shared_client, _shared_client_sig
+    async with _shared_client_lock:
+        if _shared_client is None:
+            return
+        try:
+            await _shared_client.aclose()
+        finally:
+            _shared_client = None
+            _shared_client_sig = None
 
 
 class GenerateError(Exception):
@@ -338,6 +378,7 @@ async def generate_image(
     req: Req,
     opus_free_mode: bool = False,
     start_time: int | None = None,
+    token: str = "",
 ) -> bytes:
     """
     调用官方 NovelAI API 生成图片
@@ -360,7 +401,8 @@ async def generate_image(
     )
     
     # 发送请求
-    response = await cli.post("/ai/generate-image", json=request_body)
+    headers = {"Authorization": f"Bearer {token}"} if token else None
+    response = await cli.post("/ai/generate-image", json=request_body, headers=headers)
     if start_time is not None:
         logger.debug(
             f"[nai] {start_time} -> {response.status_code}: "
@@ -418,13 +460,14 @@ async def wrapped_generate(req: Req, config: Config, token: str = "") -> bytes:
 
     logger.debug(f"[nai] {start_time} -> start")
     
-    async with create_client_from_config(config, token) as cli:
-        image = await generate_image(
-            cli,
-            req,
-            opus_free_mode=opus_free_mode,
-            start_time=start_time,
-        )
+    cli = await get_shared_client(config)
+    image = await generate_image(
+        cli,
+        req,
+        opus_free_mode=opus_free_mode,
+        start_time=start_time,
+        token=token,
+    )
     
     consumed_time_s = (time.time_ns() - start_time) / 1e9
     logger.debug(f"[nai] {start_time} -> end ({consumed_time_s} s)")

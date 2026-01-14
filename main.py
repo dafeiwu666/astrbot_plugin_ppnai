@@ -22,6 +22,7 @@ from astrbot.core.astr_agent_context import AstrAgentContext
 
 from .src.config import Config
 from .src.data_source import GenerateError, wrapped_generate
+from .src.data_source import aclose_shared_client
 from .src.llm import (
     ConfigNeededTool,
     ReturnToLLMError,
@@ -42,6 +43,7 @@ from .src.handlers_auto import (
     handle_auto_draw_on,
     handle_llm_response_auto_draw,
 )
+from .src.auto_draw_store import AutoDrawStoreManager
 
 COMMAND = "nai"
 PLUGIN_NAME = "astrbot_plugin_ppnai"
@@ -66,6 +68,29 @@ def load_usage_md() -> str:
 
 
 # endregion
+
+
+def _unwrap_tool_context(
+    wrapper: ContextWrapper[AstrAgentContext],
+) -> tuple[Context, AstrMessageEvent]:
+    """Best-effort unwrap to (Context, Event) without relying on deep nesting."""
+    agent_ctx = getattr(wrapper, "context", None)
+    if agent_ctx is None:
+        raise RuntimeError("Tool context wrapper has no 'context' attribute")
+
+    event = getattr(agent_ctx, "event", None)
+    if event is None:
+        event = getattr(wrapper, "event", None)
+    if event is None:
+        raise RuntimeError("Unable to locate AstrMessageEvent on tool context")
+
+    ctx = getattr(agent_ctx, "context", None)
+    if ctx is None:
+        ctx = getattr(wrapper, "ctx", None)
+    if ctx is None:
+        raise RuntimeError("Unable to locate AstrBot Context on tool context")
+
+    return ctx, event
 
 WAITING_REPLIES = [
     "少女绘画中……",
@@ -161,8 +186,7 @@ class STNaiGenerateImageTool(ConfigNeededTool):
             logger.debug(tip, exc_info=e)
             return format_readable_error(e)
 
-        ctx = context.context.context
-        event = context.context.event
+        ctx, event = _unwrap_tool_context(context)
 
         images = [x for x in event.message_obj.message if isinstance(x, Image)]
         sem = Semaphore(4)
@@ -263,6 +287,8 @@ class Plugin(Star):
         data_dir: Path = StarTools.get_data_dir(PLUGIN_NAME)
         self.user_manager = UserManager(data_dir)
         self.preset_manager = PresetManager(data_dir)
+
+        self._auto_draw_store = AutoDrawStoreManager(data_dir)
         
         # 自动画图状态（按会话存储）
         # key: unified_msg_origin
@@ -270,7 +296,9 @@ class Plugin(Star):
         #   - enabled: 是否开启
         #   - presets: 预设名列表，按优先级排序 [s1, s2, ...]
         #   - opener_user_id: 开启者的用户ID，用于扣额度
-        self.auto_draw_info: dict[str, dict | None] = {}
+        self.auto_draw_info: dict[str, dict | None] = self._auto_draw_store.to_runtime()
+
+        self._usage_md_cache: str | None = None
         
         # Token 轮询索引
         self._token_index = 0
@@ -284,6 +312,8 @@ class Plugin(Star):
     async def initialize(self):
         # 在事件循环中初始化信号量（共享队列状态）
         self._queue.ensure(self.config.request.max_concurrent)
+        # 避免在事件循环中做同步文件 I/O
+        self._usage_md_cache = await asyncio.to_thread(load_usage_md)
         logger.info(
             f"[nai] 队列系统初始化 pid={os.getpid()} instance={id(self)}: "
             f"最大并发={self.config.request.max_concurrent}, 最大队列={self.config.request.max_queue_size}"
@@ -291,11 +321,22 @@ class Plugin(Star):
 
     @override
     async def terminate(self):
-        pass
+        try:
+            self._auto_draw_store.save_from_runtime(self.auto_draw_info)
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to persist auto_draw_info")
+        try:
+            await aclose_shared_client()
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to close shared http client")
 
     def generate_help(self, umo: str) -> str:
         """读取 USAGE.md 文件内容作为帮助信息"""
-        return load_usage_md()
+        return self._usage_md_cache or load_usage_md()
+
+    def persist_auto_draw_info(self) -> None:
+        """Persist auto_draw_info to disk (best-effort)."""
+        self._auto_draw_store.save_from_runtime(self.auto_draw_info)
     
     async def _render_markdown_to_images(self, markdown_content: str) -> list[str]:
         """使用 pillowmd 将 Markdown 渲染为图片列表

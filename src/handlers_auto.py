@@ -12,6 +12,7 @@ from .data_source import wrapped_generate
 from .llm import llm_generate_advanced_req
 from .llm_utils import format_readable_error
 from .params import _is_image_component, parse_req_with_remaining_images, req_model_assembler
+from .queue_flow import QueueRejected, acquire_generation_semaphore, reserve_queue
 
 
 def _truthy(value: str) -> bool:
@@ -131,7 +132,9 @@ def _apply_prompt_wrappers(base: str, prepend: str, append: str) -> str:
 
 
 async def handle_auto_draw_off(plugin, event) -> AsyncIterator:
-    plugin.auto_draw_info[event.unified_msg_origin] = None
+    plugin.auto_draw_info.pop(event.unified_msg_origin, None)
+    if hasattr(plugin, "persist_auto_draw_info"):
+        plugin.persist_auto_draw_info()
     yield event.plain_result("❌ 自动画图已关闭")
 
 
@@ -157,6 +160,8 @@ async def handle_auto_draw_on(plugin, event) -> AsyncIterator:
         "presets": preset_names,
         "opener_user_id": user_id,
     }
+    if hasattr(plugin, "persist_auto_draw_info"):
+        plugin.persist_auto_draw_info()
 
     if preset_names:
         preset_str = ", ".join(f"#{name}" for name in preset_names)
@@ -200,6 +205,8 @@ async def handle_auto_draw(plugin, event) -> AsyncIterator:
             "presets": preset_names,
             "opener_user_id": user_id,
         }
+        if hasattr(plugin, "persist_auto_draw_info"):
+            plugin.persist_auto_draw_info()
 
         preset_str = ", ".join(f"#{name}" for name in preset_names)
         yield event.plain_result(
@@ -271,6 +278,8 @@ async def handle_llm_response_auto_draw(plugin, event, resp: LLMResponse):
                 )
             )
             plugin.auto_draw_info[umo] = None
+            if hasattr(plugin, "persist_auto_draw_info"):
+                plugin.persist_auto_draw_info()
             return
 
     preset_contents: list[str] = []
@@ -307,27 +316,180 @@ async def _auto_draw_generate(
     quota_enabled = plugin.config.quota.enable_quota
     umo = event.unified_msg_origin
 
-    res = await plugin._queue.reserve(
-        opener_user_id,
-        is_whitelisted=is_whitelisted,
-        max_queue_size=plugin.config.request.max_queue_size,
-        max_concurrent=plugin.config.request.max_concurrent,
-        consume_quota=(lambda: plugin.user_manager.consume_quota(opener_user_id))
+    consume_quota = (
+        (lambda: plugin.user_manager.consume_quota(opener_user_id))
         if quota_enabled and not is_whitelisted
-        else None,
+        else None
     )
 
-    close_auto = False
-    if not res.ok:
-        if res.reason == "inflight":
+    try:
+        async with reserve_queue(
+            plugin,
+            opener_user_id,
+            is_whitelisted=is_whitelisted,
+            consume_quota=consume_quota,
+        ) as reservation:
+            queue_total = reservation.queue_total
+
+            token = plugin._get_next_token()
+            queue_status = f"（当前队列：{queue_total}）" if queue_total > 1 else ""
+
+            try:
+                ai_response_with_prefix = f"参考：{ai_response}"
+                merged_raw, wrappers, explicit_ids = _merge_nai_params(preset_contents)
+                if merged_raw.strip():
+                    user_req, remaining_images = await parse_req_with_remaining_images(
+                        merged_raw,
+                        event.message_obj.message,
+                        plugin.config,
+                        is_whitelisted=is_whitelisted,
+                    )
+                else:
+                    user_req = None
+                    remaining_images = [
+                        x for x in event.message_obj.message if _is_image_component(x)
+                    ]
+
+                i2i_image = (
+                    user_req.addition.image_to_image_base64
+                    if user_req and user_req.addition
+                    else None
+                )
+                vibe_transfer_images = None
+                if user_req and user_req.addition and user_req.addition.vibe_transfer_list:
+                    vibe_transfer_images = [
+                        x.base64 for x in user_req.addition.vibe_transfer_list if x.base64
+                    ]
+                vision_images = remaining_images
+
+                full_parts = list(reversed(preset_contents)) + [ai_response_with_prefix]
+                full_instructions = "\n\n".join(full_parts)
+
+                await event.send(event.plain_result(f"🎨 自动画图中...{queue_status}"))
+
+                async with acquire_generation_semaphore(plugin):
+                    req = await llm_generate_advanced_req(
+                        instructions=f"画一张图\n{full_instructions}",
+                        config=plugin.config,
+                        ctx=plugin.context,
+                        event=event,
+                        i2i_image=i2i_image,
+                        vibe_transfer_images=vibe_transfer_images,
+                        vision_images=vision_images,
+                        skip_default_prompts=bool(preset_contents),
+                    )
+
+                    if user_req is not None:
+                        if "model" in explicit_ids:
+                            req.model = user_req.model
+                        if "size" in explicit_ids:
+                            req.size = user_req.size
+                        if "seed" in explicit_ids:
+                            req.seed = user_req.seed
+                        if "steps" in explicit_ids:
+                            req.steps = user_req.steps
+                        if "scale" in explicit_ids:
+                            req.scale = user_req.scale
+                        if "cfg" in explicit_ids:
+                            req.cfg = user_req.cfg
+                        if "sampler" in explicit_ids:
+                            req.sampler = user_req.sampler
+                        if "noise_schedule" in explicit_ids:
+                            req.noise_schedule = user_req.noise_schedule
+                        if "other" in explicit_ids:
+                            req.other = user_req.other
+                        if "i2i_force" in explicit_ids:
+                            req.i2i_force = user_req.i2i_force
+                        if "i2i_cl" in explicit_ids:
+                            req.i2i_cl = user_req.i2i_cl
+                        if "artist" in explicit_ids:
+                            req.artist = user_req.artist
+
+                        if (
+                            "character_keep" in explicit_ids
+                            and user_req.addition
+                            and user_req.addition.character_keep
+                            and req.addition
+                        ):
+                            req.addition.character_keep = user_req.addition.character_keep
+                        if (
+                            "role" in explicit_ids
+                            and user_req.addition
+                            and user_req.addition.multi_role_list
+                            and req.addition
+                        ):
+                            req.addition.multi_role_list = user_req.addition.multi_role_list
+                        if (
+                            (
+                                ("vibe_transfer_info_extract" in explicit_ids)
+                                or ("vibe_transfer_ref_strength" in explicit_ids)
+                            )
+                            and user_req.addition
+                            and user_req.addition.vibe_transfer_list
+                            and req.addition
+                        ):
+                            req.addition.vibe_transfer_list = user_req.addition.vibe_transfer_list
+
+                        if "tag" in explicit_ids:
+                            req.tag = user_req.tag
+                        elif ("prepend_tag" in explicit_ids) or (
+                            "append_tag" in explicit_ids
+                        ):
+                            req.tag = _apply_prompt_wrappers(
+                                req.tag,
+                                wrappers.get("prepend_tag", ""),
+                                wrappers.get("append_tag", ""),
+                            )
+                        if "negative" in explicit_ids:
+                            req.negative = user_req.negative
+                        elif ("prepend_negative" in explicit_ids) or (
+                            "append_negative" in explicit_ids
+                        ):
+                            req.negative = _apply_prompt_wrappers(
+                                req.negative,
+                                wrappers.get("prepend_negative", ""),
+                                wrappers.get("append_negative", ""),
+                            )
+
+                    async def _do_generate():
+                        nonlocal token
+                        token = plugin._get_next_token()
+                        return await wrapped_generate(req, plugin.config, token=token)
+
+                    image = await plugin._run_with_retry(_do_generate)
+
+                sender_id = event.get_sender_id()
+                sender_name = event.get_sender_name()
+                nodes = Nodes([
+                    Node(
+                        uin=sender_id,
+                        name=sender_name,
+                        content=[Image.fromBytes(image)],
+                    )
+                ])
+                await event.send(event.chain_result([nodes]))
+
+            except asyncio.CancelledError:
+                await plugin._queue.mark_wait_finished(
+                    max_concurrent=plugin.config.request.max_concurrent
+                )
+                raise
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"Auto draw generation failed: {e}")
+                await event.send(
+                    event.plain_result(f"🎨 自动画图失败：{format_readable_error(e)}")
+                )
+    except QueueRejected as e:
+        close_auto = False
+        if e.reason == "inflight":
             await event.send(event.plain_result("🎨 自动画图跳过：你的上一张还没画完呢~"))
-        elif res.reason == "queue_full":
+        elif e.reason == "queue_full":
             await event.send(
                 event.plain_result(
                     f"⚠️ 自动画图跳过：队列已满（{plugin.config.request.max_queue_size}）"
                 )
             )
-        elif res.reason == "quota":
+        elif e.reason == "quota":
             close_auto = True
             await event.send(
                 event.plain_result(
@@ -336,163 +498,7 @@ async def _auto_draw_generate(
                 )
             )
         if close_auto:
-            plugin.auto_draw_info[umo] = None
+            plugin.auto_draw_info.pop(umo, None)
+            if hasattr(plugin, "persist_auto_draw_info"):
+                plugin.persist_auto_draw_info()
         return
-
-    if close_auto:
-        plugin.auto_draw_info[umo] = None
-
-    reserved_user = res.reserved_user
-    queue_total = res.queue_total
-
-    token = plugin._get_next_token()
-    queue_status = f"（当前队列：{queue_total}）" if queue_total > 1 else ""
-
-    try:
-        ai_response_with_prefix = f"参考：{ai_response}"
-        merged_raw, wrappers, explicit_ids = _merge_nai_params(preset_contents)
-        if merged_raw.strip():
-            user_req, remaining_images = await parse_req_with_remaining_images(
-                merged_raw,
-                event.message_obj.message,
-                plugin.config,
-                is_whitelisted=is_whitelisted,
-            )
-        else:
-            user_req = None
-            remaining_images = [x for x in event.message_obj.message if _is_image_component(x)]
-
-        i2i_image = (
-            user_req.addition.image_to_image_base64 if user_req and user_req.addition else None
-        )
-        vibe_transfer_images = None
-        if user_req and user_req.addition and user_req.addition.vibe_transfer_list:
-            vibe_transfer_images = [
-                x.base64 for x in user_req.addition.vibe_transfer_list if x.base64
-            ]
-        vision_images = remaining_images
-
-        full_parts = list(reversed(preset_contents)) + [ai_response_with_prefix]
-        full_instructions = "\n\n".join(full_parts)
-
-        await event.send(event.plain_result(f"🎨 自动画图中...{queue_status}"))
-
-        sem = plugin._ensure_semaphore()
-        async with sem:
-            await plugin._queue.mark_wait_finished(
-                max_concurrent=plugin.config.request.max_concurrent
-            )
-
-            req = await llm_generate_advanced_req(
-                instructions=f"画一张图\n{full_instructions}",
-                config=plugin.config,
-                ctx=plugin.context,
-                event=event,
-                i2i_image=i2i_image,
-                vibe_transfer_images=vibe_transfer_images,
-                vision_images=vision_images,
-                skip_default_prompts=bool(preset_contents),
-            )
-
-            if user_req is not None:
-                if "model" in explicit_ids:
-                    req.model = user_req.model
-                if "size" in explicit_ids:
-                    req.size = user_req.size
-                if "seed" in explicit_ids:
-                    req.seed = user_req.seed
-                if "steps" in explicit_ids:
-                    req.steps = user_req.steps
-                if "scale" in explicit_ids:
-                    req.scale = user_req.scale
-                if "cfg" in explicit_ids:
-                    req.cfg = user_req.cfg
-                if "sampler" in explicit_ids:
-                    req.sampler = user_req.sampler
-                if "noise_schedule" in explicit_ids:
-                    req.noise_schedule = user_req.noise_schedule
-                if "other" in explicit_ids:
-                    req.other = user_req.other
-                if "i2i_force" in explicit_ids:
-                    req.i2i_force = user_req.i2i_force
-                if "i2i_cl" in explicit_ids:
-                    req.i2i_cl = user_req.i2i_cl
-                if "artist" in explicit_ids:
-                    req.artist = user_req.artist
-
-                if (
-                    "character_keep" in explicit_ids
-                    and user_req.addition
-                    and user_req.addition.character_keep
-                    and req.addition
-                ):
-                    req.addition.character_keep = user_req.addition.character_keep
-                if (
-                    "role" in explicit_ids
-                    and user_req.addition
-                    and user_req.addition.multi_role_list
-                    and req.addition
-                ):
-                    req.addition.multi_role_list = user_req.addition.multi_role_list
-                if (
-                    (
-                        ("vibe_transfer_info_extract" in explicit_ids)
-                        or ("vibe_transfer_ref_strength" in explicit_ids)
-                    )
-                    and user_req.addition
-                    and user_req.addition.vibe_transfer_list
-                    and req.addition
-                ):
-                    req.addition.vibe_transfer_list = user_req.addition.vibe_transfer_list
-
-                if "tag" in explicit_ids:
-                    req.tag = user_req.tag
-                elif ("prepend_tag" in explicit_ids) or ("append_tag" in explicit_ids):
-                    req.tag = _apply_prompt_wrappers(
-                        req.tag,
-                        wrappers.get("prepend_tag", ""),
-                        wrappers.get("append_tag", ""),
-                    )
-                if "negative" in explicit_ids:
-                    req.negative = user_req.negative
-                elif ("prepend_negative" in explicit_ids) or (
-                    "append_negative" in explicit_ids
-                ):
-                    req.negative = _apply_prompt_wrappers(
-                        req.negative,
-                        wrappers.get("prepend_negative", ""),
-                        wrappers.get("append_negative", ""),
-                    )
-
-            async def _do_generate():
-                nonlocal token
-                token = plugin._get_next_token()
-                return await wrapped_generate(req, plugin.config, token=token)
-
-            image = await plugin._run_with_retry(_do_generate)
-
-        user_id = event.get_sender_id()
-        user_name = event.get_sender_name()
-        nodes = Nodes([
-            Node(
-                uin=user_id,
-                name=user_name,
-                content=[Image.fromBytes(image)],
-            )
-        ])
-        await event.send(event.chain_result([nodes]))
-
-    except asyncio.CancelledError:
-        await plugin._queue.mark_wait_finished(
-            max_concurrent=plugin.config.request.max_concurrent
-        )
-        raise
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"Auto draw generation failed: {e}")
-        await event.send(event.plain_result(f"🎨 自动画图失败：{format_readable_error(e)}"))
-    finally:
-        await plugin._queue.release(
-            user_id=opener_user_id,
-            reserved_user=reserved_user,
-            max_concurrent=plugin.config.request.max_concurrent,
-        )
