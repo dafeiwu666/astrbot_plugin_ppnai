@@ -17,9 +17,6 @@ from astrbot.api.event import AstrMessageEvent, MessageChain, filter as event_fi
 from astrbot.api.provider import LLMResponse
 from astrbot.api.message_components import Image, Reply
 from astrbot.api.star import Context, Star, StarTools
-from astrbot.core.agent.run_context import ContextWrapper
-from astrbot.core.agent.tool import ToolExecResult
-from astrbot.core.astr_agent_context import AstrAgentContext
 
 from .src.config import Config
 from .src.data_source import GenerateError, wrapped_generate
@@ -124,130 +121,44 @@ def _cleanup_legacy_help_cache() -> int:
         return 0
 
 
-def _unwrap_tool_context(
-    wrapper: ContextWrapper[AstrAgentContext],
-) -> tuple[Context, AstrMessageEvent]:
-    """Best-effort unwrap to (Context, Event) without relying on deep nesting.
+def _unwrap_tool_context(tool_context: object) -> tuple[Context, AstrMessageEvent]:
+    """从 Tool 运行时上下文中提取 (Context, AstrMessageEvent)。
 
-    AstrBot may pass different wrapper shapes across versions/providers; prefer a
-    small bounded search for Context + AstrMessageEvent.
+    这里刻意不做“深层遍历/反射猜测”（BFS + __dict__/硬编码路径），而是只依赖一个
+    明确且浅层的约定：Tool context 能提供 AstrAgentContext，且其中包含 context/event。
+
+    若 AstrBot 框架升级导致此约定变化，应当在此处按官方 API 文档做一次性适配，
+    而不是通过遍历对象图的方式“碰运气”。
     """
 
-    def _maybe_call0(obj: object, name: str):
-        fn = getattr(obj, name, None)
-        if not callable(fn):
-            return None
+    astr_ctx = None
+
+    getter = getattr(tool_context, "get_astr_context", None)
+    if callable(getter):
         try:
-            return fn()
-        except TypeError:
-            return None
+            astr_ctx = getter()
         except Exception:  # noqa: BLE001
-            return None
+            astr_ctx = None
 
-    def _safe_getattr(obj: object, name: str):
-        """Best-effort getattr that tries to avoid triggering properties."""
+    if astr_ctx is None:
         try:
-            d = getattr(obj, "__dict__", None)
-            if isinstance(d, dict) and name in d:
-                return d.get(name)
+            astr_ctx = tool_context.astr_context
         except Exception:  # noqa: BLE001
-            pass
-        try:
-            return getattr(obj, name)
-        except Exception:  # noqa: BLE001
-            return None
+            astr_ctx = None
 
-    # 1) Prefer framework public interfaces / getters (if present)
-    direct_ctx = (
-        _maybe_call0(wrapper, "get_context")
-        or _maybe_call0(wrapper, "get_ctx")
-        or _maybe_call0(wrapper, "context")
-    )
-    direct_event = (
-        _maybe_call0(wrapper, "get_event")
-        or _maybe_call0(wrapper, "get_message_event")
-        or _maybe_call0(wrapper, "event")
-    )
+    if astr_ctx is None:
+        astr_ctx = tool_context
 
-    agent_ctx = (
-        _maybe_call0(wrapper, "get_agent_ctx")
-        or _maybe_call0(wrapper, "get_astr_context")
-        or getattr(wrapper, "agent_ctx", None)
-        or getattr(wrapper, "astr_context", None)
-    )
-    if direct_event is None and agent_ctx is not None:
-        direct_event = (
-            _maybe_call0(agent_ctx, "get_event")
-            or _maybe_call0(agent_ctx, "get_message_event")
-            or getattr(agent_ctx, "event", None)
-            or getattr(agent_ctx, "message_event", None)
-        )
-    if direct_ctx is None and agent_ctx is not None:
-        direct_ctx = (
-            _maybe_call0(agent_ctx, "get_context")
-            or _maybe_call0(agent_ctx, "get_ctx")
-            or getattr(agent_ctx, "context", None)
-            or getattr(agent_ctx, "ctx", None)
-        )
+    ctx = getattr(astr_ctx, "context", None)
+    event = getattr(astr_ctx, "event", None)
 
-    if isinstance(direct_ctx, Context) and isinstance(direct_event, AstrMessageEvent):
-        return direct_ctx, direct_event
+    if isinstance(ctx, Context) and isinstance(event, AstrMessageEvent):
+        return ctx, event
 
-    def _iter_children(obj: object) -> list[object]:
-        res: list[object] = []
-        for name in (
-            "context",
-            "ctx",
-            "event",
-            "agent_ctx",
-            "astr_context",
-            "message_event",
-            "tool_context",
-            "run_context",
-            "wrapper",
-        ):
-            v = _safe_getattr(obj, name)
-            if v is not None:
-                res.append(v)
-        return res
-
-    found_ctx: Context | None = None
-    found_event: AstrMessageEvent | None = None
-
-    max_depth = 4
-    max_nodes = 64
-    frontier: list[object] = [wrapper]
-    seen: set[int] = set()
-    for _depth in range(max_depth):
-        next_frontier: list[object] = []
-        for obj in frontier:
-            if len(seen) >= max_nodes:
-                break
-            oid = id(obj)
-            if oid in seen:
-                continue
-            seen.add(oid)
-
-            if found_ctx is None and isinstance(obj, Context):
-                found_ctx = obj
-            if found_event is None and isinstance(obj, AstrMessageEvent):
-                found_event = obj
-            if found_ctx is not None and found_event is not None:
-                return found_ctx, found_event
-
-            next_frontier.extend(_iter_children(obj))
-        if len(seen) >= max_nodes:
-            break
-        frontier = next_frontier
-
-    hints: dict[str, str] = {}
-    for k in ("context", "ctx", "event", "agent_ctx", "astr_context", "message_event"):
-        v = _safe_getattr(wrapper, k)
-        if v is not None:
-            hints[k] = type(v).__name__
     raise RuntimeError(
-        "Unable to locate AstrBot Context/AstrMessageEvent on tool context; "
-        f"wrapper_type={type(wrapper).__name__}, hints={hints}, visited={len(seen)}",
+        "Unable to locate AstrBot Context/AstrMessageEvent on tool context. "
+        "Expected tool_context.get_astr_context()/tool_context.astr_context -> object with 'context' and 'event'. "
+        f"tool_context_type={type(tool_context).__name__}, astr_ctx_type={type(astr_ctx).__name__}",
     )
 
 WAITING_REPLIES = [
@@ -339,8 +250,10 @@ class STNaiGenerateImageTool(ConfigNeededTool):
             self.parameters = parameters
 
     async def call(
-        self, context: ContextWrapper[AstrAgentContext], **kwargs
-    ) -> ToolExecResult:
+        self,
+        context: object,
+        **kwargs,
+    ) -> str:
         try:
             args = STNaiGenerateImageArgs.model_validate(kwargs)
         except Exception as e:

@@ -7,15 +7,9 @@ from pydantic.dataclasses import dataclass
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.star import Context
-try:
-    # Prefer public API exports when available (some AstrBot versions may not expose these)
-    from astrbot.api.agent.message import ImageURLPart, Message, TextPart
-    from astrbot.api.agent.tool import FunctionTool
-    from astrbot.api.astr_agent_context import AstrAgentContext
-except Exception:  # pragma: no cover
-    from astrbot.core.agent.message import ImageURLPart, Message, TextPart
-    from astrbot.core.agent.tool import FunctionTool
-    from astrbot.core.astr_agent_context import AstrAgentContext
+from astrbot.api.agent.message import ImageURLPart, Message, TextPart
+from astrbot.api.agent.tool import FunctionTool
+from astrbot.api.astr_agent_context import AstrAgentContext
 
 from .config import Config
 from .data_source import wrapped_generate
@@ -37,26 +31,18 @@ if TYPE_CHECKING:
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 ADVANCED_PROMPT_PATH = PROMPTS_DIR / "advanced.txt"
 
-_ADVANCED_PROMPT_CACHE: str | None = None
-_ADVANCED_PROMPT_LOCK = asyncio.Lock()
 
+async def _load_advanced_prompt_text() -> str:
+    """读取高级参数生成提示词。
 
-async def _get_advanced_prompt_text() -> str:
-    global _ADVANCED_PROMPT_CACHE
-    if _ADVANCED_PROMPT_CACHE is not None:
-        return _ADVANCED_PROMPT_CACHE
+    不使用模块级全局缓存，避免跨插件实例/热重载的全局状态副作用。
+    """
 
-    async with _ADVANCED_PROMPT_LOCK:
-        if _ADVANCED_PROMPT_CACHE is not None:
-            return _ADVANCED_PROMPT_CACHE
-        try:
-            _ADVANCED_PROMPT_CACHE = await asyncio.to_thread(
-                ADVANCED_PROMPT_PATH.read_text, "utf-8"
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.exception("Failed to load advanced prompt text", exc_info=e)
-            _ADVANCED_PROMPT_CACHE = ""
-        return _ADVANCED_PROMPT_CACHE
+    try:
+        return await asyncio.to_thread(ADVANCED_PROMPT_PATH.read_text, "utf-8")
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Failed to load advanced prompt text", exc_info=e)
+        return ""
 
 
 def get_size_from_config(config: Config, orientation: OrientationType) -> str:
@@ -255,7 +241,7 @@ async def llm_generate_advanced_req(
         provider_id,
     )
 
-    system_prompt = await _get_advanced_prompt_text()
+    system_prompt = await _load_advanced_prompt_text()
     # 使用 replace 而不是 format，避免误解析提示词中的其他花括号内容
     system_prompt = (
         system_prompt
