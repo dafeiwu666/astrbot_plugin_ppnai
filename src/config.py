@@ -49,7 +49,7 @@ class RequestConfig(BaseModel):
                 "hint": "支持配置多个 Token，系统会轮询使用。请使用 NovelAI 官方 Persistent API Token（以 pst- 开头）",
             },
         ),
-    ] = []
+    ] = Field(default_factory=list)
     connect_timeout: Annotated[
         float,
         Field(

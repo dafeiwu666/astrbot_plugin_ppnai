@@ -134,7 +134,7 @@ def _apply_prompt_wrappers(base: str, prepend: str, append: str) -> str:
 async def handle_auto_draw_off(plugin, event) -> AsyncIterator:
     plugin.auto_draw_info.pop(event.unified_msg_origin, None)
     if hasattr(plugin, "persist_auto_draw_info"):
-        plugin.persist_auto_draw_info()
+           await plugin.persist_auto_draw_info()
     yield event.plain_result("❌ 自动画图已关闭")
 
 
@@ -161,7 +161,7 @@ async def handle_auto_draw_on(plugin, event) -> AsyncIterator:
         "opener_user_id": user_id,
     }
     if hasattr(plugin, "persist_auto_draw_info"):
-        plugin.persist_auto_draw_info()
+            await plugin.persist_auto_draw_info()
 
     if preset_names:
         preset_str = ", ".join(f"#{name}" for name in preset_names)
@@ -206,7 +206,7 @@ async def handle_auto_draw(plugin, event) -> AsyncIterator:
             "opener_user_id": user_id,
         }
         if hasattr(plugin, "persist_auto_draw_info"):
-            plugin.persist_auto_draw_info()
+                await plugin.persist_auto_draw_info()
 
         preset_str = ", ".join(f"#{name}" for name in preset_names)
         yield event.plain_result(
@@ -279,7 +279,7 @@ async def handle_llm_response_auto_draw(plugin, event, resp: LLMResponse):
             )
             plugin.auto_draw_info[umo] = None
             if hasattr(plugin, "persist_auto_draw_info"):
-                plugin.persist_auto_draw_info()
+                    await plugin.persist_auto_draw_info()
             return
 
     preset_contents: list[str] = []
@@ -500,5 +500,5 @@ async def _auto_draw_generate(
         if close_auto:
             plugin.auto_draw_info.pop(umo, None)
             if hasattr(plugin, "persist_auto_draw_info"):
-                plugin.persist_auto_draw_info()
+                await plugin.persist_auto_draw_info()
         return

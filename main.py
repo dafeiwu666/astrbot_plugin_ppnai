@@ -70,6 +70,10 @@ def load_usage_md() -> str:
 # endregion
 
 
+def _default_help_text() -> str:
+    return "# 泡泡画图\n\n帮助文档加载中，请稍后重试。"
+
+
 def _unwrap_tool_context(
     wrapper: ContextWrapper[AstrAgentContext],
 ) -> tuple[Context, AstrMessageEvent]:
@@ -296,9 +300,11 @@ class Plugin(Star):
         #   - enabled: 是否开启
         #   - presets: 预设名列表，按优先级排序 [s1, s2, ...]
         #   - opener_user_id: 开启者的用户ID，用于扣额度
-        self.auto_draw_info: dict[str, dict | None] = self._auto_draw_store.to_runtime()
+        # 延迟到 initialize 中异步加载（避免潜在的磁盘 I/O 阻塞）
+        self.auto_draw_info: dict[str, dict | None] = {}
 
         self._usage_md_cache: str | None = None
+        self._usage_md_loading: bool = False
         
         # Token 轮询索引
         self._token_index = 0
@@ -314,6 +320,17 @@ class Plugin(Star):
         self._queue.ensure(self.config.request.max_concurrent)
         # 避免在事件循环中做同步文件 I/O
         self._usage_md_cache = await asyncio.to_thread(load_usage_md)
+
+        # 预加载预设与自动画图状态，避免后续在指令处理期间触发同步文件 I/O
+        try:
+            await asyncio.to_thread(self.preset_manager.reload)
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to preload presets")
+        try:
+            self.auto_draw_info = await self._auto_draw_store.ato_runtime()
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to load persisted auto_draw_info")
+            self.auto_draw_info = {}
         logger.info(
             f"[nai] 队列系统初始化 pid={os.getpid()} instance={id(self)}: "
             f"最大并发={self.config.request.max_concurrent}, 最大队列={self.config.request.max_queue_size}"
@@ -322,7 +339,7 @@ class Plugin(Star):
     @override
     async def terminate(self):
         try:
-            self._auto_draw_store.save_from_runtime(self.auto_draw_info)
+            await self._auto_draw_store.asave_from_runtime(self.auto_draw_info)
         except Exception:  # noqa: BLE001
             logger.exception("Failed to persist auto_draw_info")
         try:
@@ -332,11 +349,36 @@ class Plugin(Star):
 
     def generate_help(self, umo: str) -> str:
         """读取 USAGE.md 文件内容作为帮助信息"""
-        return self._usage_md_cache or load_usage_md()
+        if self._usage_md_cache:
+            return self._usage_md_cache
 
-    def persist_auto_draw_info(self) -> None:
-        """Persist auto_draw_info to disk (best-effort)."""
-        self._auto_draw_store.save_from_runtime(self.auto_draw_info)
+        # 不要在事件循环中触发同步读文件：如果还没缓存好，先返回占位文本并异步加载
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # 没有事件循环（极少数场景），允许同步读取
+            try:
+                self._usage_md_cache = load_usage_md()
+                return self._usage_md_cache
+            except Exception:  # noqa: BLE001
+                return _default_help_text()
+
+        if not self._usage_md_loading:
+            self._usage_md_loading = True
+
+            async def _reload_usage():
+                try:
+                    self._usage_md_cache = await asyncio.to_thread(load_usage_md)
+                finally:
+                    self._usage_md_loading = False
+
+            loop.create_task(_reload_usage())
+
+        return _default_help_text()
+
+    async def persist_auto_draw_info(self) -> None:
+        """Persist auto_draw_info to disk without blocking event loop (best-effort)."""
+        await self._auto_draw_store.asave_from_runtime(self.auto_draw_info)
     
     async def _render_markdown_to_images(self, markdown_content: str) -> list[str]:
         """使用 pillowmd 将 Markdown 渲染为图片列表
@@ -915,7 +957,7 @@ class Plugin(Star):
             )
             return
         
-        self.preset_manager.add_preset(title, content)
+        await asyncio.to_thread(self.preset_manager.add_preset, title, content)
         yield event.plain_result(f"✅ 预设 #{title} 添加成功！\n\n预览：\n{content[:200]}{'...' if len(content) > 200 else ''}")
     
     @event_filter.command("nai预设删除")
@@ -932,7 +974,8 @@ class Plugin(Star):
         
         title = args.split()[0]
         
-        if self.preset_manager.delete_preset(title):
+        deleted = await asyncio.to_thread(self.preset_manager.delete_preset, title)
+        if deleted:
             yield event.plain_result(f"✅ 预设 #{title} 已删除")
         else:
             yield event.plain_result(f"预设 #{title} 不存在")

@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -29,6 +30,27 @@ if TYPE_CHECKING:
     pass
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 ADVANCED_PROMPT_PATH = PROMPTS_DIR / "advanced.txt"
+
+_ADVANCED_PROMPT_CACHE: str | None = None
+_ADVANCED_PROMPT_LOCK = asyncio.Lock()
+
+
+async def _get_advanced_prompt_text() -> str:
+    global _ADVANCED_PROMPT_CACHE
+    if _ADVANCED_PROMPT_CACHE is not None:
+        return _ADVANCED_PROMPT_CACHE
+
+    async with _ADVANCED_PROMPT_LOCK:
+        if _ADVANCED_PROMPT_CACHE is not None:
+            return _ADVANCED_PROMPT_CACHE
+        try:
+            _ADVANCED_PROMPT_CACHE = await asyncio.to_thread(
+                ADVANCED_PROMPT_PATH.read_text, "utf-8"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.exception("Failed to load advanced prompt text", exc_info=e)
+            _ADVANCED_PROMPT_CACHE = ""
+        return _ADVANCED_PROMPT_CACHE
 
 
 def get_size_from_config(config: Config, orientation: OrientationType) -> str:
@@ -225,7 +247,7 @@ async def llm_generate_advanced_req(
         provider_id,
     )
 
-    system_prompt = ADVANCED_PROMPT_PATH.read_text("u8")
+    system_prompt = await _get_advanced_prompt_text()
     # 使用 replace 而不是 format，避免误解析提示词中的其他花括号内容
     system_prompt = (
         system_prompt

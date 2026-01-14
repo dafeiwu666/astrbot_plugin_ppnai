@@ -4,6 +4,7 @@ This keeps `auto_draw_info` across restarts so users don't lose their auto-draw
 settings after the bot restarts.
 """
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -43,6 +44,9 @@ class AutoDrawStoreManager:
             self._store = AutoDrawStore()
         return self._store
 
+    async def aload(self) -> AutoDrawStore:
+        return await asyncio.to_thread(self.load)
+
     def save_from_runtime(self, auto_draw_info: dict[str, dict | None]) -> None:
         store = self.load()
         sessions: dict[str, AutoDrawSession] = {}
@@ -57,6 +61,12 @@ class AutoDrawStoreManager:
         self._ensure_dir()
         self.data_file.write_text(store.model_dump_json(indent=2), "utf-8")
 
+    async def asave_from_runtime(self, auto_draw_info: dict[str, dict | None]) -> None:
+        await asyncio.to_thread(self.save_from_runtime, auto_draw_info)
+
     def to_runtime(self) -> dict[str, dict | None]:
         store = self.load()
         return {umo: sess.model_dump() for umo, sess in store.sessions.items()}
+
+    async def ato_runtime(self) -> dict[str, dict | None]:
+        return await asyncio.to_thread(self.to_runtime)

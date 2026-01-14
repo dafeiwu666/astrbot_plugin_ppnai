@@ -426,19 +426,16 @@ async def generate_image(
     
     # 官方 API 返回 ZIP 文件，需要解压获取图片
     try:
-        zip_data = io.BytesIO(response.content)
-        with zipfile.ZipFile(zip_data, 'r') as zf:
-            # ZIP 中通常只有一个图片文件
-            file_list = zf.namelist()
-            if not file_list:
-                raise GenerateError("返回的 ZIP 文件为空")
-            
-            # 获取第一个图片文件
-            image_filename = file_list[0]
-            image_data = zf.read(image_filename)
+        def _extract_image_from_zip(payload: bytes) -> bytes:
+            zip_data = io.BytesIO(payload)
+            with zipfile.ZipFile(zip_data, "r") as zf:
+                file_list = zf.namelist()
+                if not file_list:
+                    raise GenerateError("返回的 ZIP 文件为空")
+                image_filename = file_list[0]
+                return zf.read(image_filename)
 
-            return image_data
-            
+        return await asyncio.to_thread(_extract_image_from_zip, response.content)
     except zipfile.BadZipFile as e:
         logger.error(f"[nai] 无法解析返回的 ZIP 文件: {e}")
         raise GenerateError("返回的数据不是有效的 ZIP 文件") from e
