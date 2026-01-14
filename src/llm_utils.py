@@ -1,5 +1,7 @@
 """LLM-side helpers for formatting and cleanup."""
 
+import re
+
 from .text_sanitize import shorten_base64_segments
 
 from astrbot.api import logger

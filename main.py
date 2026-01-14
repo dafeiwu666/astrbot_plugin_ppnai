@@ -133,15 +133,49 @@ def _unwrap_tool_context(
     small bounded search for Context + AstrMessageEvent.
     """
 
-    # 1) Prefer direct/stable paths (no graph traversal)
-    direct_ctx = getattr(wrapper, "context", None) or getattr(wrapper, "ctx", None)
-    direct_event = getattr(wrapper, "event", None)
+    def _maybe_call0(obj: object, name: str):
+        fn = getattr(obj, name, None)
+        if not callable(fn):
+            return None
+        try:
+            return fn()
+        except TypeError:
+            return None
+        except Exception:  # noqa: BLE001
+            return None
 
-    agent_ctx = getattr(wrapper, "agent_ctx", None) or getattr(wrapper, "astr_context", None)
+    # 1) Prefer framework public interfaces / getters (if present)
+    direct_ctx = (
+        _maybe_call0(wrapper, "get_context")
+        or _maybe_call0(wrapper, "get_ctx")
+        or _maybe_call0(wrapper, "context")
+    )
+    direct_event = (
+        _maybe_call0(wrapper, "get_event")
+        or _maybe_call0(wrapper, "get_message_event")
+        or _maybe_call0(wrapper, "event")
+    )
+
+    agent_ctx = (
+        _maybe_call0(wrapper, "get_agent_ctx")
+        or _maybe_call0(wrapper, "get_astr_context")
+        or getattr(wrapper, "agent_ctx", None)
+        or getattr(wrapper, "astr_context", None)
+    )
     if direct_event is None and agent_ctx is not None:
-        direct_event = getattr(agent_ctx, "event", None) or getattr(agent_ctx, "message_event", None)
+        direct_event = (
+            _maybe_call0(agent_ctx, "get_event")
+            or _maybe_call0(agent_ctx, "get_message_event")
+            or getattr(agent_ctx, "event", None)
+            or getattr(agent_ctx, "message_event", None)
+        )
     if direct_ctx is None and agent_ctx is not None:
-        direct_ctx = getattr(agent_ctx, "context", None) or getattr(agent_ctx, "ctx", None)
+        direct_ctx = (
+            _maybe_call0(agent_ctx, "get_context")
+            or _maybe_call0(agent_ctx, "get_ctx")
+            or getattr(agent_ctx, "context", None)
+            or getattr(agent_ctx, "ctx", None)
+        )
 
     if isinstance(direct_ctx, Context) and isinstance(direct_event, AstrMessageEvent):
         return direct_ctx, direct_event
@@ -271,6 +305,10 @@ class STNaiGenerateImageTool(ConfigNeededTool):
     def __post_init__(self):
         super().__post_init__()
 
+        # Limit concurrent image fetching across tool calls.
+        # This is intentionally instance-level (tool object is registered once).
+        self._image_fetch_sem = Semaphore(4)
+
         allow_image = self.config.llm.allow_i2i or self.config.llm.allow_vibe_transfer
         if not allow_image:
             self.parameters = STNaiGenerateImageArgsNoImage.model_json_schema()
@@ -300,7 +338,7 @@ class STNaiGenerateImageTool(ConfigNeededTool):
         ctx, event = _unwrap_tool_context(context)
 
         images = [x for x in event.message_obj.message if isinstance(x, Image)]
-        sem = Semaphore(4)
+        sem = self._image_fetch_sem
 
         async def _get_image(index: int) -> str:
             try:
