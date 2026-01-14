@@ -19,7 +19,7 @@ from .queue_flow import QueueRejected, acquire_generation_semaphore, reserve_que
 async def handle_auto_draw_off(plugin, event) -> AsyncIterator:
     plugin.auto_draw_info.pop(event.unified_msg_origin, None)
     if hasattr(plugin, "persist_auto_draw_info"):
-    await plugin.persist_auto_draw_info()
+        await plugin.persist_auto_draw_info()
     yield event.plain_result("❌ 自动画图已关闭")
 
 
@@ -278,7 +278,12 @@ async def _auto_draw_generate(
                     async def _do_generate():
                         nonlocal token
                         token = plugin._get_next_token()
-                        return await wrapped_generate(req, plugin.config, token=token)
+                        return await wrapped_generate(
+                            req,
+                            plugin.config,
+                            token=token,
+                            client_getter=plugin.get_http_client,
+                        )
 
                     image = await plugin._run_with_retry(_do_generate)
 

@@ -147,7 +147,12 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
                     async def _do_generate():
                         nonlocal token
                         token = plugin._get_next_token()
-                        return await wrapped_generate(req, plugin.config, token=token)
+                        return await wrapped_generate(
+                            req,
+                            plugin.config,
+                            token=token,
+                            client_getter=plugin.get_http_client,
+                        )
 
                     image = await plugin._run_with_retry(_do_generate)
 
@@ -259,7 +264,12 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
                         nonlocal token
                         token = plugin._get_next_token()
                         req.token = token
-                        return await wrapped_generate(req, plugin.config, token=token)
+                        return await wrapped_generate(
+                            req,
+                            plugin.config,
+                            token=token,
+                            client_getter=plugin.get_http_client,
+                        )
 
                     image = await plugin._run_with_retry(_do_generate)
 

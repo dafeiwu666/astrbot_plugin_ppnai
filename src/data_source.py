@@ -10,6 +10,7 @@ import json
 import random
 import time
 import zipfile
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from httpx import AsyncClient, Timeout
@@ -46,48 +47,6 @@ def create_client_from_config(config: "Config", token: str = ""):
             config.request.connect_timeout, read=config.request.read_timeout
         ),
     )
-
-
-_shared_client: AsyncClient | None = None
-_shared_client_sig: tuple[str, float, float] | None = None
-_shared_client_lock = asyncio.Lock()
-
-
-def _client_signature(config: "Config") -> tuple[str, float, float]:
-    return (
-        str(config.request.base_url),
-        float(config.request.connect_timeout),
-        float(config.request.read_timeout),
-    )
-
-
-async def get_shared_client(config: "Config") -> AsyncClient:
-    """Get a process-wide shared client for connection pooling."""
-    global _shared_client, _shared_client_sig
-    sig = _client_signature(config)
-    async with _shared_client_lock:
-        if _shared_client is not None and _shared_client_sig == sig:
-            return _shared_client
-        if _shared_client is not None:
-            try:
-                await _shared_client.aclose()
-            except Exception:  # noqa: BLE001
-                pass
-        _shared_client = create_client_from_config(config)
-        _shared_client_sig = sig
-        return _shared_client
-
-
-async def aclose_shared_client() -> None:
-    global _shared_client, _shared_client_sig
-    async with _shared_client_lock:
-        if _shared_client is None:
-            return
-        try:
-            await _shared_client.aclose()
-        finally:
-            _shared_client = None
-            _shared_client_sig = None
 
 
 class GenerateError(Exception):
@@ -433,7 +392,13 @@ async def generate_image(
         raise GenerateError("返回的数据不是有效的 ZIP 文件") from e
 
 
-async def wrapped_generate(req: Req, config: Config, token: str = "") -> bytes:
+async def wrapped_generate(
+    req: Req,
+    config: Config,
+    token: str = "",
+    *,
+    client_getter: Callable[[], Awaitable[AsyncClient]] | None = None,
+) -> bytes:
     """生成图片
     
     Args:
@@ -449,14 +414,26 @@ async def wrapped_generate(req: Req, config: Config, token: str = "") -> bytes:
 
     logger.debug(f"[nai] {start_time} -> start")
     
-    cli = await get_shared_client(config)
-    image = await generate_image(
-        cli,
-        req,
-        opus_free_mode=opus_free_mode,
-        start_time=start_time,
-        token=token,
-    )
+    close_after = False
+    if client_getter is not None:
+        cli = await client_getter()
+    else:
+        # 回退为“每次请求一个临时 client”，避免模块级全局状态。
+        # 若你希望复用连接池，应在上层（Plugin 实例）注入 client_getter。
+        cli = create_client_from_config(config)
+        close_after = True
+
+    try:
+        image = await generate_image(
+            cli,
+            req,
+            opus_free_mode=opus_free_mode,
+            start_time=start_time,
+            token=token,
+        )
+    finally:
+        if close_after:
+            await cli.aclose()
     
     consumed_time_s = (time.time_ns() - start_time) / 1e9
     logger.debug(f"[nai] {start_time} -> end ({consumed_time_s} s)")

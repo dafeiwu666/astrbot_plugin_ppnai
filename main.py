@@ -1,7 +1,11 @@
 import asyncio
 import os
+import sys
+import types
 import uuid
 from asyncio import Semaphore
+from importlib import import_module
+from importlib import util as importlib_util
 from io import BytesIO
 from pathlib import Path
 from typing import Annotated
@@ -17,11 +21,54 @@ from astrbot.api.event import AstrMessageEvent, MessageChain, filter as event_fi
 from astrbot.api.provider import LLMResponse
 from astrbot.api.message_components import Image, Reply
 from astrbot.api.star import Context, Star, StarTools
-from astrbot.api.astr_agent_context import AstrAgentContext
+from astrbot.core.agent.run_context import ContextWrapper
+from astrbot.core.astr_agent_context import AstrAgentContext
+from astrbot.core.agent.tool import ToolExecResult
+
+
+def _load_src_module(module_basename: str):
+    """Load a module from this plugin's src/ folder.
+
+    1) Try normal relative import: `.<plugin>.src.<module>`.
+    2) If that fails (common when loader doesn't treat src as a package),
+       load from file path: `<plugin_dir>/src/<module>.py`.
+    """
+
+    pkg = __package__
+    if pkg:
+        try:
+            return import_module(f"{pkg}.src.{module_basename}")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                f"[nai] Relative import failed for {pkg}.src.{module_basename}; trying file-path import",
+                exc_info=exc,
+            )
+
+    src_dir = Path(__file__).parent / "src"
+    file_path = src_dir / f"{module_basename}.py"
+    if not file_path.exists():
+        raise ModuleNotFoundError(
+            f"Missing src module file: {file_path} (module={module_basename})",
+        )
+
+    # Ensure parent package `<pkg>.src` exists so relative imports inside src modules work.
+    src_pkg_name = f"{pkg}.src" if pkg else "src"
+    if src_pkg_name not in sys.modules:
+        src_pkg = types.ModuleType(src_pkg_name)
+        src_pkg.__path__ = [str(src_dir)]
+        sys.modules[src_pkg_name] = src_pkg
+
+    mod_name = f"{src_pkg_name}.{module_basename}"
+    spec = importlib_util.spec_from_file_location(mod_name, file_path)
+    if spec is None or spec.loader is None:
+        raise ModuleNotFoundError(f"Failed to create import spec for {file_path}")
+    module = importlib_util.module_from_spec(spec)
+    sys.modules[mod_name] = module
+    spec.loader.exec_module(module)
+    return module
 
 from .src.config import Config
-from .src.data_source import GenerateError, wrapped_generate
-from .src.data_source import aclose_shared_client
+from .src.data_source import GenerateError, create_client_from_config, wrapped_generate
 from .src.llm import (
     ConfigNeededTool,
     ReturnToLLMError,
@@ -36,33 +83,127 @@ from .src.user_manager import UserManager
 from .src.preset_manager import PresetManager
 from .src.queue_manager import get_shared_queue
 from .src.handlers_nai import handle_cmd_nai, handle_nai_draw
-from .src.handlers_admin import (
-    handle_add_blacklist,
-    handle_add_quota,
-    handle_add_whitelist,
-    handle_admin_query_user,
-    handle_checkin,
-    handle_list_blacklist,
-    handle_list_whitelist,
-    handle_query_quota,
-    handle_queue_status,
-    handle_remove_blacklist,
-    handle_remove_whitelist,
-    handle_set_quota,
-)
-from .src.handlers_preset import (
-    handle_preset_add,
-    handle_preset_delete,
-    handle_preset_list,
-    handle_preset_view,
-)
+try:
+    from .src.handlers_admin import (
+        handle_add_blacklist,
+        handle_add_quota,
+        handle_add_whitelist,
+        handle_admin_query_user,
+        handle_checkin,
+        handle_list_blacklist,
+        handle_list_whitelist,
+        handle_query_quota,
+        handle_queue_status,
+        handle_remove_blacklist,
+        handle_remove_whitelist,
+        handle_set_quota,
+    )
+except Exception:  # noqa: BLE001
+    try:
+        _m = _load_src_module("handlers_admin")
+        handle_add_blacklist = _m.handle_add_blacklist
+        handle_add_quota = _m.handle_add_quota
+        handle_add_whitelist = _m.handle_add_whitelist
+        handle_admin_query_user = _m.handle_admin_query_user
+        handle_checkin = _m.handle_checkin
+        handle_list_blacklist = _m.handle_list_blacklist
+        handle_list_whitelist = _m.handle_list_whitelist
+        handle_query_quota = _m.handle_query_quota
+        handle_queue_status = _m.handle_queue_status
+        handle_remove_blacklist = _m.handle_remove_blacklist
+        handle_remove_whitelist = _m.handle_remove_whitelist
+        handle_set_quota = _m.handle_set_quota
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Failed to import admin handlers module (.src.handlers_admin). "
+            "Admin/quota commands will be unavailable. "
+            "This is usually caused by incomplete plugin deployment (missing 'src/handlers_admin.py' or package files).",
+        )
+
+        def _make_missing_admin_handler(handler_name: str):
+            async def _handler(_plugin, event):
+                yield event.plain_result(
+                    "管理员/额度模块加载失败，相关命令暂不可用。\n"
+                    "请确认已完整部署插件文件（尤其是 src/handlers_admin.py 与 src/__init__.py），然后重启 AstrBot。\n"
+                    f"缺失处理器：{handler_name}",
+                )
+
+            return _handler
+
+        handle_checkin = _make_missing_admin_handler("handle_checkin")
+        handle_queue_status = _make_missing_admin_handler("handle_queue_status")
+        handle_query_quota = _make_missing_admin_handler("handle_query_quota")
+        handle_add_blacklist = _make_missing_admin_handler("handle_add_blacklist")
+        handle_remove_blacklist = _make_missing_admin_handler("handle_remove_blacklist")
+        handle_list_blacklist = _make_missing_admin_handler("handle_list_blacklist")
+        handle_add_whitelist = _make_missing_admin_handler("handle_add_whitelist")
+        handle_remove_whitelist = _make_missing_admin_handler("handle_remove_whitelist")
+        handle_list_whitelist = _make_missing_admin_handler("handle_list_whitelist")
+        handle_add_quota = _make_missing_admin_handler("handle_add_quota")
+        handle_set_quota = _make_missing_admin_handler("handle_set_quota")
+        handle_admin_query_user = _make_missing_admin_handler("handle_admin_query_user")
+try:
+    from .src.handlers_preset import (
+        handle_preset_add,
+        handle_preset_delete,
+        handle_preset_list,
+        handle_preset_view,
+    )
+except Exception:  # noqa: BLE001
+    try:
+        _m = _load_src_module("handlers_preset")
+        handle_preset_add = _m.handle_preset_add
+        handle_preset_delete = _m.handle_preset_delete
+        handle_preset_list = _m.handle_preset_list
+        handle_preset_view = _m.handle_preset_view
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Failed to import preset handlers module (.src.handlers_preset). "
+            "Preset commands will be unavailable. "
+            "This is usually caused by incomplete plugin deployment (missing 'src/handlers_preset.py' or package files).",
+        )
+
+        def _make_missing_preset_handler(handler_name: str):
+            async def _handler(_plugin, event):
+                yield event.plain_result(
+                    "预设模块加载失败，相关命令暂不可用。\n"
+                    "请确认已完整部署插件文件（尤其是 src/handlers_preset.py 与 src/__init__.py），然后重启 AstrBot。\n"
+                    f"缺失处理器：{handler_name}",
+                )
+
+            return _handler
+
+        handle_preset_add = _make_missing_preset_handler("handle_preset_add")
+        handle_preset_delete = _make_missing_preset_handler("handle_preset_delete")
+        handle_preset_list = _make_missing_preset_handler("handle_preset_list")
+        handle_preset_view = _make_missing_preset_handler("handle_preset_view")
 from .src.handlers_auto import (
     handle_auto_draw,
     handle_auto_draw_off,
     handle_auto_draw_on,
     handle_llm_response_auto_draw,
 )
-from .src.auto_draw_store import AutoDrawStoreManager
+try:
+    from .src.auto_draw_store import AutoDrawStoreManager
+except Exception:  # noqa: BLE001
+    try:
+        AutoDrawStoreManager = _load_src_module("auto_draw_store").AutoDrawStoreManager
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Failed to import auto-draw store module (.src.auto_draw_store). "
+            "Auto-draw state persistence will be disabled. "
+            "This is usually caused by incomplete plugin deployment (missing 'src/auto_draw_store.py' or package files).",
+        )
+
+        class AutoDrawStoreManager:  # type: ignore[no-redef]
+            def __init__(self, _data_dir: Path):
+                pass
+
+            async def ato_runtime(self) -> dict[str, dict | None]:
+                return {}
+
+            async def asave_from_runtime(self, _auto_draw_info: dict[str, dict | None]) -> None:
+                return None
 
 COMMAND = "nai"
 PLUGIN_NAME = "astrbot_plugin_ppnai"
@@ -122,43 +263,9 @@ def _cleanup_legacy_help_cache() -> int:
         return 0
 
 
-def _unwrap_tool_context(tool_context: object) -> tuple[Context, AstrMessageEvent]:
-    """从 Tool 运行时上下文中提取 (Context, AstrMessageEvent)。
-
-    这里刻意不做“深层遍历/反射猜测”（BFS + __dict__/硬编码路径），而是只依赖一个
-    明确且浅层的约定：Tool context 能提供 AstrAgentContext，且其中包含 context/event。
-
-    若 AstrBot 框架升级导致此约定变化，应当在此处按官方 API 文档做一次性适配，
-    而不是通过遍历对象图的方式“碰运气”。
-    """
-
-    astr_ctx: AstrAgentContext | None = None
-
-    # 允许框架显式提供公开方法（如果存在）。除此之外不做任何属性探测。
-    get_astr_context = getattr(tool_context, "get_astr_context", None)
-    if callable(get_astr_context):
-        try:
-            candidate = get_astr_context()
-        except Exception as e:  # noqa: BLE001
-            logger.warning("[nai] tool_context.get_astr_context() failed", exc_info=e)
-            candidate = None
-        if isinstance(candidate, AstrAgentContext):
-            astr_ctx = candidate
-
-    if astr_ctx is None and isinstance(tool_context, AstrAgentContext):
-        astr_ctx = tool_context
-
-    if astr_ctx is None:
-        # 这里明确告诉你：框架没有给出我们需要的公开 API。
-        raise RuntimeError(
-            "AstrBot did not provide a public, stable way to obtain Context/AstrMessageEvent for Tool calls. "
-            "Expected tool_context to be AstrAgentContext or to expose tool_context.get_astr_context() -> AstrAgentContext. "
-            f"got tool_context_type={type(tool_context).__name__}",
-        )
-
-    # AstrAgentContext 的这些字段属于公开 API（来自 astrbot.api.astr_agent_context）。
-    ctx = astr_ctx.context
-    event = astr_ctx.event
+def _unwrap_tool_context(context: ContextWrapper[AstrAgentContext]) -> tuple[Context, AstrMessageEvent]:
+    ctx = context.context.context
+    event = context.context.event
     return ctx, event
 
 WAITING_REPLIES = [
@@ -251,9 +358,9 @@ class STNaiGenerateImageTool(ConfigNeededTool):
 
     async def call(
         self,
-        context: object,
+        context: ContextWrapper[AstrAgentContext],
         **kwargs,
-    ) -> str:
+    ) -> ToolExecResult:
         try:
             args = STNaiGenerateImageArgs.model_validate(kwargs)
         except Exception as e:
@@ -325,6 +432,7 @@ class STNaiGenerateImageTool(ConfigNeededTool):
                 i2i_image,
                 vibe_transfer_images,
                 vision_images=vision_images,
+                client_getter=self.client_getter,
             )
         except ReturnToLLMError as e:
             logger.debug(f"{e}")
@@ -358,6 +466,11 @@ class Plugin(Star):
         super().__init__(context)
         self.config = Config.model_validate(config)
 
+        # Per-plugin HTTP client (avoid module-level global state).
+        self._http_client = None
+        self._http_client_sig: tuple[str, float, float] | None = None
+        self._http_client_lock = asyncio.Lock()
+
         # Background tasks spawned by handlers (auto-draw etc.).
         # We track them so plugin shutdown can cancel/await cleanly.
         self._background_tasks: set[asyncio.Task] = set()
@@ -386,7 +499,12 @@ class Plugin(Star):
         # 画图队列（进程内共享，避免多实例导致并发翻倍）
         self._queue = get_shared_queue()
 
-        self.context.add_llm_tools(STNaiGenerateImageTool(config_init=self.config))
+        self.context.add_llm_tools(
+            STNaiGenerateImageTool(
+                config_init=self.config,
+                client_getter_init=self.get_http_client,
+            )
+        )
 
     @override
     async def initialize(self):
@@ -440,9 +558,42 @@ class Plugin(Star):
         except Exception:  # noqa: BLE001
             logger.exception("Failed to persist auto_draw_info")
         try:
-            await aclose_shared_client()
+            await self._close_http_client()
         except Exception:  # noqa: BLE001
-            logger.exception("Failed to close shared http client")
+            logger.exception("Failed to close http client")
+
+    def _http_client_signature(self) -> tuple[str, float, float]:
+        return (
+            str(self.config.request.base_url),
+            float(self.config.request.connect_timeout),
+            float(self.config.request.read_timeout),
+        )
+
+    async def get_http_client(self):
+        """Get this plugin instance's pooled AsyncClient (recreated on config change)."""
+        sig = self._http_client_signature()
+        async with self._http_client_lock:
+            if self._http_client is not None and self._http_client_sig == sig:
+                return self._http_client
+            if self._http_client is not None:
+                try:
+                    await self._http_client.aclose()
+                except Exception:  # noqa: BLE001
+                    logger.debug("[nai] Failed to close previous http client", exc_info=True)
+
+            self._http_client = create_client_from_config(self.config)
+            self._http_client_sig = sig
+            return self._http_client
+
+    async def _close_http_client(self) -> None:
+        async with self._http_client_lock:
+            if self._http_client is None:
+                return
+            try:
+                await self._http_client.aclose()
+            finally:
+                self._http_client = None
+                self._http_client_sig = None
 
     def _create_background_task(self, coro, *, name: str | None = None) -> asyncio.Task:
         """Create and track a background task to avoid lost exceptions/leaks."""

@@ -1,4 +1,3 @@
-import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -7,9 +6,9 @@ from pydantic.dataclasses import dataclass
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.star import Context
-from astrbot.api.agent.message import ImageURLPart, Message, TextPart
-from astrbot.api.agent.tool import FunctionTool
-from astrbot.api.astr_agent_context import AstrAgentContext
+from astrbot.core.agent.message import ImageURLPart, Message, TextPart
+from astrbot.core.agent.tool import FunctionTool
+from astrbot.core.astr_agent_context import AstrAgentContext
 
 from .config import Config
 from .data_source import wrapped_generate
@@ -30,19 +29,6 @@ if TYPE_CHECKING:
     pass
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 ADVANCED_PROMPT_PATH = PROMPTS_DIR / "advanced.txt"
-
-
-async def _load_advanced_prompt_text() -> str:
-    """读取高级参数生成提示词。
-
-    不使用模块级全局缓存，避免跨插件实例/热重载的全局状态副作用。
-    """
-
-    try:
-        return await asyncio.to_thread(ADVANCED_PROMPT_PATH.read_text, "utf-8")
-    except Exception as e:  # noqa: BLE001
-        logger.exception("Failed to load advanced prompt text", exc_info=e)
-        return ""
 
 
 def get_size_from_config(config: Config, orientation: OrientationType) -> str:
@@ -91,10 +77,8 @@ async def llm_generate_prepare_req(
             ", there may have a internal error"
         )
 
-    # 应用正则清洗（避免复杂正则阻塞事件循环）
-    message = await asyncio.to_thread(
-        apply_regex_replacements, message, config.llm.regex_replacements
-    )
+    # 应用正则清洗
+    message = apply_regex_replacements(message, config.llm.regex_replacements)
 
     try:
         args = STNaiGenerateImageAdvancedArgs.model_validate_json(message)
@@ -241,7 +225,7 @@ async def llm_generate_advanced_req(
         provider_id,
     )
 
-    system_prompt = await _load_advanced_prompt_text()
+    system_prompt = ADVANCED_PROMPT_PATH.read_text("u8")
     # 使用 replace 而不是 format，避免误解析提示词中的其他花括号内容
     system_prompt = (
         system_prompt
@@ -259,15 +243,8 @@ async def llm_generate_advanced_req(
     user_content: str | list[Any]
     if config.llm.enable_vision and vision_images:
         parts: list[Any] = [TextPart(text=instructions)]
-        limit = int(getattr(config.llm, "vision_image_limit", 0) or 0)
-        selected = vision_images if limit <= 0 else vision_images[:limit]
-        logger.info(
-            "[nai][vision] attach_images provided=%s selected=%s limit=%s",
-            len(vision_images),
-            len(selected),
-            limit,
-        )
-        for i, img in enumerate(selected):
+        # 目前只取 1 张图作为识图参考（减少 token/体积），但会在日志里打印实际传入数量
+        for i, img in enumerate(vision_images[:1]):
             data_uri = await resolve_image(img)
             header = data_uri.split(",", 1)[0] if isinstance(data_uri, str) else "<non-str>"
             logger.info(
