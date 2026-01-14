@@ -1,5 +1,6 @@
 """用户额度管理模块"""
 
+import asyncio
 import json
 import random
 from datetime import date
@@ -218,3 +219,42 @@ class UserManager:
         """重新加载数据（用于外部修改后刷新）"""
         self._store = None
         self._load()
+
+    async def acheckin(self, user_id: str, config: "Config") -> tuple[bool, int, str]:
+        return await asyncio.to_thread(self.checkin, user_id, config)
+
+    async def aget_quota(self, user_id: str) -> int:
+        return await asyncio.to_thread(self.get_quota, user_id)
+
+    async def ais_blacklisted(self, user_id: str) -> bool:
+        return await asyncio.to_thread(self.is_blacklisted, user_id)
+
+    async def ais_whitelisted(self, user_id: str) -> bool:
+        return await asyncio.to_thread(self.is_whitelisted, user_id)
+
+    async def aadd_to_blacklist(self, user_id: str) -> bool:
+        return await asyncio.to_thread(self.add_to_blacklist, user_id)
+
+    async def aremove_from_blacklist(self, user_id: str) -> bool:
+        return await asyncio.to_thread(self.remove_from_blacklist, user_id)
+
+    async def aadd_to_whitelist(self, user_id: str) -> bool:
+        return await asyncio.to_thread(self.add_to_whitelist, user_id)
+
+    async def aremove_from_whitelist(self, user_id: str) -> bool:
+        return await asyncio.to_thread(self.remove_from_whitelist, user_id)
+
+    async def aget_blacklist(self) -> list[str]:
+        return await asyncio.to_thread(self.get_blacklist)
+
+    async def aget_whitelist(self) -> list[str]:
+        return await asyncio.to_thread(self.get_whitelist)
+
+    async def aset_quota(self, user_id: str, quota: int) -> None:
+        await asyncio.to_thread(self.set_quota, user_id, quota)
+
+    async def aadd_quota(self, user_id: str, amount: int) -> int:
+        return await asyncio.to_thread(self.add_quota, user_id, amount)
+
+    async def areload(self) -> None:
+        await asyncio.to_thread(self.reload)

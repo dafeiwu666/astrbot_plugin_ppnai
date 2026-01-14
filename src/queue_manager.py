@@ -54,7 +54,8 @@ class SharedQueueState:
             if self._is_queue_full(max_queue_size):
                 return ReserveResult(False, "queue_full", self.queue_count, False)
             if consume_quota and (not is_whitelisted):
-                if not consume_quota():
+                ok = await asyncio.to_thread(consume_quota)
+                if not ok:
                     return ReserveResult(False, "quota", self.queue_count, False)
 
             reserved_user = False

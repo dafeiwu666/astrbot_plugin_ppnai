@@ -77,24 +77,47 @@ def _default_help_text() -> str:
 def _unwrap_tool_context(
     wrapper: ContextWrapper[AstrAgentContext],
 ) -> tuple[Context, AstrMessageEvent]:
-    """Best-effort unwrap to (Context, Event) without relying on deep nesting."""
-    agent_ctx = getattr(wrapper, "context", None)
-    if agent_ctx is None:
-        raise RuntimeError("Tool context wrapper has no 'context' attribute")
+    """Best-effort unwrap to (Context, Event) without relying on deep nesting.
 
-    event = getattr(agent_ctx, "event", None)
-    if event is None:
-        event = getattr(wrapper, "event", None)
-    if event is None:
-        raise RuntimeError("Unable to locate AstrMessageEvent on tool context")
+    AstrBot may pass different wrapper shapes across versions/providers; prefer a
+    small bounded search for Context + AstrMessageEvent.
+    """
 
-    ctx = getattr(agent_ctx, "context", None)
-    if ctx is None:
-        ctx = getattr(wrapper, "ctx", None)
-    if ctx is None:
-        raise RuntimeError("Unable to locate AstrBot Context on tool context")
+    def _iter_children(obj: object) -> list[object]:
+        res: list[object] = []
+        for name in ("context", "ctx", "event", "agent_ctx", "astr_context"):
+            try:
+                v = getattr(obj, name)
+            except Exception:
+                continue
+            if v is not None:
+                res.append(v)
+        return res
 
-    return ctx, event
+    found_ctx: Context | None = None
+    found_event: AstrMessageEvent | None = None
+
+    frontier: list[object] = [wrapper]
+    seen: set[int] = set()
+    for _depth in range(4):
+        next_frontier: list[object] = []
+        for obj in frontier:
+            oid = id(obj)
+            if oid in seen:
+                continue
+            seen.add(oid)
+
+            if found_ctx is None and isinstance(obj, Context):
+                found_ctx = obj
+            if found_event is None and isinstance(obj, AstrMessageEvent):
+                found_event = obj
+            if found_ctx is not None and found_event is not None:
+                return found_ctx, found_event
+
+            next_frontier.extend(_iter_children(obj))
+        frontier = next_frontier
+
+    raise RuntimeError("Unable to locate AstrBot Context/AstrMessageEvent on tool context")
 
 WAITING_REPLIES = [
     "少女绘画中……",
@@ -322,6 +345,10 @@ class Plugin(Star):
         self._usage_md_cache = await asyncio.to_thread(load_usage_md)
 
         # 预加载预设与自动画图状态，避免后续在指令处理期间触发同步文件 I/O
+        try:
+            await asyncio.to_thread(self.user_manager.reload)
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to preload user data")
         try:
             await asyncio.to_thread(self.preset_manager.reload)
         except Exception:  # noqa: BLE001
@@ -566,7 +593,7 @@ class Plugin(Star):
                 match = preset_pattern.match(key)
                 if match:
                     preset_num = int(match.group(1))
-                    preset = self.preset_manager.get_preset(value)
+                    preset = await asyncio.to_thread(self.preset_manager.get_preset, value)
                     if preset is None:
                         raise ValueError(f"预设 {value} 不存在，使用 nai预设列表 查看可用预设")
                     
@@ -668,7 +695,7 @@ class Plugin(Star):
     async def cmd_checkin(self, event: AstrMessageEvent):
         """每日签到获取画图额度"""
         user_id = self._get_user_id(event)
-        success, gained, message = self.user_manager.checkin(user_id, self.config)
+        success, gained, message = await asyncio.to_thread(self.user_manager.checkin, user_id, self.config)
         yield event.plain_result(message)
     
     @event_filter.command("nai队列")
@@ -702,11 +729,11 @@ class Plugin(Star):
         """查询自己的画图额度"""
         user_id = self._get_user_id(event)
         
-        if self.user_manager.is_blacklisted(user_id):
+        if await asyncio.to_thread(self.user_manager.is_blacklisted, user_id):
             yield event.plain_result("你已被加入黑名单")
             return
         
-        if self.user_manager.is_whitelisted(user_id):
+        if await asyncio.to_thread(self.user_manager.is_whitelisted, user_id):
             yield event.plain_result("你在白名单中，可无限使用画图功能")
             return
         
@@ -714,7 +741,7 @@ class Plugin(Star):
             yield event.plain_result("当前未启用额度系统，可无限使用画图功能")
             return
         
-        quota = self.user_manager.get_quota(user_id)
+        quota = await asyncio.to_thread(self.user_manager.get_quota, user_id)
         yield event.plain_result(f"你当前剩余 {quota} 次画图额度")
 
     # ========== 管理员命令 ==========
@@ -732,7 +759,7 @@ class Plugin(Star):
             return
         
         user_id = args.split()[0]
-        if self.user_manager.add_to_blacklist(user_id):
+        if await asyncio.to_thread(self.user_manager.add_to_blacklist, user_id):
             yield event.plain_result(f"已将用户 {user_id} 添加到黑名单")
         else:
             yield event.plain_result(f"用户 {user_id} 已在黑名单中")
@@ -750,7 +777,7 @@ class Plugin(Star):
             return
         
         user_id = args.split()[0]
-        if self.user_manager.remove_from_blacklist(user_id):
+        if await asyncio.to_thread(self.user_manager.remove_from_blacklist, user_id):
             yield event.plain_result(f"已将用户 {user_id} 从黑名单移除")
         else:
             yield event.plain_result(f"用户 {user_id} 不在黑名单中")
@@ -762,7 +789,7 @@ class Plugin(Star):
             yield event.plain_result("权限不足，仅管理员可使用此命令")
             return
         
-        blacklist = self.user_manager.get_blacklist()
+        blacklist = await asyncio.to_thread(self.user_manager.get_blacklist)
         if not blacklist:
             yield event.plain_result("黑名单为空")
         else:
@@ -781,7 +808,7 @@ class Plugin(Star):
             return
         
         user_id = args.split()[0]
-        if self.user_manager.add_to_whitelist(user_id):
+        if await asyncio.to_thread(self.user_manager.add_to_whitelist, user_id):
             yield event.plain_result(f"已将用户 {user_id} 添加到白名单")
         else:
             yield event.plain_result(f"用户 {user_id} 已在白名单中")
@@ -799,7 +826,7 @@ class Plugin(Star):
             return
         
         user_id = args.split()[0]
-        if self.user_manager.remove_from_whitelist(user_id):
+        if await asyncio.to_thread(self.user_manager.remove_from_whitelist, user_id):
             yield event.plain_result(f"已将用户 {user_id} 从白名单移除")
         else:
             yield event.plain_result(f"用户 {user_id} 不在白名单中")
@@ -811,7 +838,7 @@ class Plugin(Star):
             yield event.plain_result("权限不足，仅管理员可使用此命令")
             return
         
-        whitelist = self.user_manager.get_whitelist()
+        whitelist = await asyncio.to_thread(self.user_manager.get_whitelist)
         if not whitelist:
             yield event.plain_result("白名单为空")
         else:
@@ -830,12 +857,12 @@ class Plugin(Star):
             return
         
         user_id = args.split()[0]
-        quota = self.user_manager.get_quota(user_id)
+        quota = await asyncio.to_thread(self.user_manager.get_quota, user_id)
         
         status = ""
-        if self.user_manager.is_blacklisted(user_id):
+        if await asyncio.to_thread(self.user_manager.is_blacklisted, user_id):
             status = "（黑名单）"
-        elif self.user_manager.is_whitelisted(user_id):
+        elif await asyncio.to_thread(self.user_manager.is_whitelisted, user_id):
             status = "（白名单）"
         
         yield event.plain_result(f"用户 {user_id}{status} 的额度：{quota} 次")
@@ -859,7 +886,7 @@ class Plugin(Star):
             yield event.plain_result("额度必须是整数")
             return
         
-        self.user_manager.set_quota(user_id, quota)
+        await asyncio.to_thread(self.user_manager.set_quota, user_id, quota)
         yield event.plain_result(f"已将用户 {user_id} 的额度设置为 {quota} 次")
     
     @event_filter.command("nai增加额度")
@@ -881,7 +908,7 @@ class Plugin(Star):
             yield event.plain_result("额度必须是整数")
             return
         
-        new_quota = self.user_manager.add_quota(user_id, amount)
+        new_quota = await asyncio.to_thread(self.user_manager.add_quota, user_id, amount)
         yield event.plain_result(f"已为用户 {user_id} 增加 {amount} 次额度，当前额度：{new_quota} 次")
 
     # ========== 预设命令 ==========
@@ -889,7 +916,7 @@ class Plugin(Star):
     @event_filter.command("nai预设列表")
     async def cmd_preset_list(self, event: AstrMessageEvent):
         """查看预设列表"""
-        presets = self.preset_manager.list_presets()
+        presets = await asyncio.to_thread(self.preset_manager.list_presets)
         if not presets:
             yield event.plain_result("暂无预设，管理员可使用 nai预设添加 命令添加预设")
             return
@@ -907,7 +934,7 @@ class Plugin(Star):
             return
         
         title = args.split()[0]
-        preset = self.preset_manager.get_preset(title)
+        preset = await asyncio.to_thread(self.preset_manager.get_preset, title)
         
         if preset is None:
             yield event.plain_result(f"预设 #{title} 不存在")
@@ -951,7 +978,7 @@ class Plugin(Star):
         content = lines[1]
         
         # 检查是否已存在
-        if self.preset_manager.get_preset(title) is not None:
+        if await asyncio.to_thread(self.preset_manager.get_preset, title) is not None:
             yield event.plain_result(
                 f"预设 #{title} 已存在，如需修改请先删除再添加"
             )

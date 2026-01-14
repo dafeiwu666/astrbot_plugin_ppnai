@@ -1,5 +1,6 @@
 """预设提示词管理模块"""
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -104,3 +105,21 @@ class PresetManager:
         """重新加载数据"""
         self._store = None
         self._load()
+
+    async def alist_presets(self) -> list[str]:
+        return await asyncio.to_thread(self.list_presets)
+
+    async def aget_preset(self, title: str) -> Preset | None:
+        return await asyncio.to_thread(self.get_preset, title)
+
+    async def aadd_preset(self, title: str, content: str) -> bool:
+        return await asyncio.to_thread(self.add_preset, title, content)
+
+    async def aupdate_preset(self, title: str, content: str) -> bool:
+        return await asyncio.to_thread(self.update_preset, title, content)
+
+    async def adelete_preset(self, title: str) -> bool:
+        return await asyncio.to_thread(self.delete_preset, title)
+
+    async def areload(self) -> None:
+        await asyncio.to_thread(self.reload)
