@@ -17,6 +17,7 @@ from astrbot.api.event import AstrMessageEvent, MessageChain, filter as event_fi
 from astrbot.api.provider import LLMResponse
 from astrbot.api.message_components import Image, Reply
 from astrbot.api.star import Context, Star, StarTools
+from astrbot.api.astr_agent_context import AstrAgentContext
 
 from .src.config import Config
 from .src.data_source import GenerateError, wrapped_generate
@@ -131,54 +132,34 @@ def _unwrap_tool_context(tool_context: object) -> tuple[Context, AstrMessageEven
     而不是通过遍历对象图的方式“碰运气”。
     """
 
-    astr_ctx = None
+    astr_ctx: AstrAgentContext | None = None
 
-    getter = getattr(tool_context, "get_astr_context", None)
-    if callable(getter):
+    # 允许框架显式提供公开方法（如果存在）。除此之外不做任何属性探测。
+    get_astr_context = getattr(tool_context, "get_astr_context", None)
+    if callable(get_astr_context):
         try:
-            astr_ctx = getter()
-        except Exception:  # noqa: BLE001
-            astr_ctx = None
+            candidate = get_astr_context()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[nai] tool_context.get_astr_context() failed", exc_info=e)
+            candidate = None
+        if isinstance(candidate, AstrAgentContext):
+            astr_ctx = candidate
 
-    if astr_ctx is None:
-        try:
-            astr_ctx = tool_context.astr_context
-        except Exception:  # noqa: BLE001
-            astr_ctx = None
-
-    if astr_ctx is None:
+    if astr_ctx is None and isinstance(tool_context, AstrAgentContext):
         astr_ctx = tool_context
 
-    ctx = getattr(astr_ctx, "context", None)
-    event = getattr(astr_ctx, "event", None)
+    if astr_ctx is None:
+        # 这里明确告诉你：框架没有给出我们需要的公开 API。
+        raise RuntimeError(
+            "AstrBot did not provide a public, stable way to obtain Context/AstrMessageEvent for Tool calls. "
+            "Expected tool_context to be AstrAgentContext or to expose tool_context.get_astr_context() -> AstrAgentContext. "
+            f"got tool_context_type={type(tool_context).__name__}",
+        )
 
-    if isinstance(ctx, Context) and isinstance(event, AstrMessageEvent):
-        return ctx, event
-
-    def _safe_attr_type(obj: object, name: str) -> str:
-        try:
-            v = getattr(obj, name)
-        except Exception:  # noqa: BLE001
-            return "<error>"
-        return type(v).__name__
-
-    debug_info = {
-        "tool_context_type": type(tool_context).__name__,
-        "has_get_astr_context": callable(getattr(tool_context, "get_astr_context", None)),
-        "has_astr_context": hasattr(tool_context, "astr_context"),
-        "astr_ctx_type": type(astr_ctx).__name__,
-        "astr_ctx_has_context": hasattr(astr_ctx, "context"),
-        "astr_ctx_has_event": hasattr(astr_ctx, "event"),
-        "astr_ctx_context_type": _safe_attr_type(astr_ctx, "context"),
-        "astr_ctx_event_type": _safe_attr_type(astr_ctx, "event"),
-    }
-    logger.warning(f"[nai] Tool context unwrap failed: {debug_info}")
-
-    raise RuntimeError(
-        "Unable to locate AstrBot Context/AstrMessageEvent on tool context. "
-        "Expected tool_context.get_astr_context()/tool_context.astr_context -> object with 'context' and 'event'. "
-        f"tool_context_type={type(tool_context).__name__}, astr_ctx_type={type(astr_ctx).__name__}",
-    )
+    # AstrAgentContext 的这些字段属于公开 API（来自 astrbot.api.astr_agent_context）。
+    ctx = astr_ctx.context
+    event = astr_ctx.event
+    return ctx, event
 
 WAITING_REPLIES = [
     "少女绘画中……",
