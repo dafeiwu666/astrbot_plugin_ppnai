@@ -180,6 +180,17 @@ class LLMConfig(BaseModel):
         ),
     ] = False
 
+    vision_image_limit: Annotated[
+        int,
+        Field(
+            description="视觉输入图片数量上限（0 表示不限制）",
+            ge=0,
+            json_schema_extra={
+                "hint": "用于高级参数生成模型的多模态图片数量上限。设置过大可能导致请求体/Token 过大、速度变慢或模型拒绝。",
+            },
+        ),
+    ] = 0
+
     vision_provider: Annotated[
         str,
         Field(

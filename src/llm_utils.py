@@ -2,7 +2,7 @@
 
 import re
 
-from astrbot import logger
+from astrbot.api import logger
 
 BASE64_BLOB_RE = re.compile(r"(?:data:[^;]+;base64,)?[A-Za-z0-9+/]{512,}={0,2}")
 

@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic.dataclasses import dataclass
 
-from astrbot import logger
+from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.star import Context
 from astrbot.core.agent.message import ImageURLPart, Message, TextPart
@@ -243,8 +243,15 @@ async def llm_generate_advanced_req(
     user_content: str | list[Any]
     if config.llm.enable_vision and vision_images:
         parts: list[Any] = [TextPart(text=instructions)]
-        # 目前只取 1 张图作为识图参考（减少 token/体积），但会在日志里打印实际传入数量
-        for i, img in enumerate(vision_images[:1]):
+        limit = int(getattr(config.llm, "vision_image_limit", 0) or 0)
+        selected = vision_images if limit <= 0 else vision_images[:limit]
+        logger.info(
+            "[nai][vision] attach_images provided=%s selected=%s limit=%s",
+            len(vision_images),
+            len(selected),
+            limit,
+        )
+        for i, img in enumerate(selected):
             data_uri = await resolve_image(img)
             header = data_uri.split(",", 1)[0] if isinstance(data_uri, str) else "<non-str>"
             logger.info(

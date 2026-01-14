@@ -10,12 +10,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic.dataclasses import dataclass
 from typing_extensions import override
 
-from astrbot import logger
+from astrbot.api import logger
 from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter as event_filter
 from astrbot.api.provider import LLMResponse
 from astrbot.api.message_components import Image, Reply
-from astrbot.api.star import Context, Star
+from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
@@ -44,6 +44,7 @@ from .src.handlers_auto import (
 )
 
 COMMAND = "nai"
+PLUGIN_NAME = "astrbot_plugin_ppnai"
 
 # region help
 
@@ -259,7 +260,7 @@ class Plugin(Star):
         self.config = Config.model_validate(config)
         
         # 初始化用户管理器和预设管理器，数据存储在插件目录下的 data 文件夹
-        data_dir = Path(__file__).parent / "data"
+        data_dir: Path = StarTools.get_data_dir(PLUGIN_NAME)
         self.user_manager = UserManager(data_dir)
         self.preset_manager = PresetManager(data_dir)
         
@@ -337,7 +338,7 @@ class Plugin(Star):
                 images = [render_result]
             
             # 保存到本地缓存目录
-            cache_dir = Path(__file__).parent / "data" / "cache"
+            cache_dir: Path = StarTools.get_data_dir(PLUGIN_NAME) / "cache"
             cache_dir.mkdir(parents=True, exist_ok=True)
             
             saved_paths = []
@@ -346,7 +347,7 @@ class Plugin(Star):
             for i, img in enumerate(images):
                 # 生成唯一文件名
                 image_path = cache_dir / f"help_{session_id}_{i}.png"
-                img.save(str(image_path), format="PNG")
+                await asyncio.to_thread(img.save, str(image_path), format="PNG")
                 saved_paths.append(str(image_path))
 
             return saved_paths

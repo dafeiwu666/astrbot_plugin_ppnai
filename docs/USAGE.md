@@ -77,13 +77,31 @@ nai画图
 - `预设1`、`预设2` 等：按优先级使用多个预设
 - `描述`：自然语言描述，AI 会自动转换为绘图参数
 
+#### 使用 `nai` 参数进行个性化设置（推荐）
+
+`nai画图` 除了支持自然语言 `描述` 让 AI 自动生成参数，也支持直接写 **与 `nai` 同款的 `key=value` 参数**来个性化控制；这些显式参数会优先生效/覆盖 AI 自动生成的结果。
+
+示例：
+```
+nai画图
+描述=把图里的角色改成冬装
+model=nai-diffusion-4-5-curated
+steps=28
+size=竖图
+前置正向=best quality, masterpiece
+```
+
 #### 识图（可选）
 
 `nai画图` 和 `nai自动画图` 支持“把你发送的图片作为参考”交给**高级参数模型**进行识图（多模态）。
 
 - 使用方式：发送命令时带上图片即可（同一条消息内）。
-- 前提条件：配置里开启 `llm.enable_vision=true`，并确保 `llm.advanced_arg_generation_provider` 指向一个支持多模态的模型/提供商。
-- 调试日志：每次触发会输出形如 `[nai][vision] ...` 的日志；如果 provider 不支持多模态，会有 `falling back to text-only` 的 warning。
+
+当你在同一条消息里发送多张图片时：
+
+- 若启用了 `i2i` / `vibe_transfer` / `character_keep` 等参数，会按图片顺序先“消耗”对应数量。
+- **剩余图片会作为识图参考**传给高级参数模型（需要开启 `llm.enable_vision=true`）。
+- 可选：用 `llm.vision_image_limit` 限制传给模型的参考图片数量（0 表示不限制）。
 
 ---
 
@@ -108,6 +126,10 @@ nai自动画图关
 ```
 
 > ⚠️ 自动画图的额度由开启者承担
+
+#### 在自动画图里使用 `nai` 参数个性化
+
+`nai自动画图` 的预设内容支持写入与 `nai` 相同的 `key=value` 参数（例如 `model/size/steps/seed/role/i2i/vibe_transfer/character_keep/前置正向...`），用于个性化控制自动出图风格与参数。
 
 ---
 

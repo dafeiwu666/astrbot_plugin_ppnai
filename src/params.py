@@ -11,6 +11,24 @@ from typing_extensions import TypedDict, Unpack
 
 from astrbot.core.message.components import BaseMessageComponent, Image
 
+try:
+    # Newer AstrBot versions expose message components from astrbot.api
+    from astrbot.api.message_components import Image as ApiImage
+except Exception:  # pragma: no cover
+    ApiImage = None  # type: ignore[assignment]
+
+
+def _is_image_component(comp: BaseMessageComponent) -> bool:
+    if isinstance(comp, Image):
+        return True
+    if ApiImage is not None and isinstance(comp, ApiImage):
+        return True
+    # Fallback for component type drift across AstrBot versions
+    return (
+        hasattr(comp, "convert_to_base64")
+        and "image" in comp.__class__.__name__.lower()
+    )
+
 from .models import (
     AVAILABLE_DOTH,
     AVAILABLE_MODELS,
@@ -950,13 +968,31 @@ async def parse_req(
         is_whitelisted: 用户是否在白名单中（白名单用户不受步数28和自定义尺寸限制）
     """
     input_params = list(parse_params(raw_params))
-    images = [comp for comp in message if isinstance(comp, Image)]
+    images = [comp for comp in message if _is_image_component(comp)]
     req = await req_model_assembler.apply(input_params, images, config, is_whitelisted)
     
     # 进行权限检查
     post_check_limits(req, config, is_whitelisted)
     
     return req
+
+
+async def parse_req_with_remaining_images(
+    raw_params: str,
+    message: list[BaseMessageComponent],
+    config: "Config",
+    is_whitelisted: bool = False,
+) -> tuple[Req, list[Image]]:
+    """Like parse_req, but also returns remaining (unused) images.
+
+    The returned images are the leftover queue after i2i/vibe_transfer/character_keep
+    and similar image-consuming parameters have popped from it.
+    """
+    input_params = list(parse_params(raw_params))
+    images: list[Image] = [comp for comp in message if _is_image_component(comp)]
+    req = await req_model_assembler.apply(input_params, images, config, is_whitelisted)
+    post_check_limits(req, config, is_whitelisted)
+    return req, images
     
     # 进行权限检查
     post_check_limits(req, config, is_whitelisted)

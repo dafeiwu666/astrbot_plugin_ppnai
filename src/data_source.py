@@ -14,7 +14,7 @@ from typing import Any
 
 from httpx import AsyncClient, Timeout
 
-from astrbot import logger
+from astrbot.api import logger
 
 from .config import Config
 from .models import Req

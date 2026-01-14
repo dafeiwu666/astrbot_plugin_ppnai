@@ -16,6 +16,8 @@
     - **角色保持 (Character Keep)**：保持角色特征一致性。
     - **多角色控制 (Role)**：指定不同区域角色的外貌。
     - **视觉识图**：支持多模态模型识别发送的图片并生成参数。
+    - **多图参考（可选）**：同一条消息里发送多张图，除被 i2i/氛围转移/角色保持“消耗”的图片外，其余图片都会作为识图参考传给高级参数模型（可用 `llm.vision_image_limit` 限制数量）。
+    - **参数个性化**：`nai画图` / `nai自动画图` 支持与 `nai` 相同的 `key=value` 参数，用于覆盖/微调模型、尺寸、步数、seed、role、i2i、vibe_transfer、character_keep、提示词包装器等。
 - **⚙️ 强大的系统管理**：
     - **队列系统**：并发控制，防止 API 过载，支持排队等待。
     - **额度经济**：支持每日签到、额度限制，防止滥用。
@@ -47,6 +49,27 @@
 | `llm.advanced_arg_generation_provider` | 用于将自然语言转换为绘图参数的 LLM 模型提供商。 | ❌ 否 |
 | `llm.enable_vision` | 是否启用视觉输入（需要模型支持 Vision），用于参考图分析。 | ❌ 否 |
 | `quota.enable_quota` | 是否启用额度/签到系统。 | ❌ 否 |
+
+## 🤖 推荐 LLM（高级参数生成）
+
+`nai画图` / `nai自动画图` 会调用 `llm.advanced_arg_generation_provider` 来生成高级绘图参数。
+
+- **推荐：`deepseek-chat`**（文本模型，输出稳定，也可做识图参考）
+- **推荐：`gemini-3-flash`**（多模态模型，适合开启 `llm.enable_vision=true` 做识图参考）
+
+### 关于 `gemini-3-flash` 的“破限提示词 + 正则”
+
+为了让输出严格贴合 JSON schema，建议同时：
+
+1. 修改高级参数生成提示词：`src/prompts/advanced.txt`（常被口误为 advance.txt）
+2. 配置 `llm.regex_replacements` 做输出清洗（去掉 ```json 围栏、前后解释等）
+
+示例（每行一条，格式：`正则|||替换`）：
+```text
+```(?:json)?\s*||| 
+\s*```||| 
+^[\s\S]*?(\{[\s\S]*\})[\s\S]*$|||\1
+```
 
 ## 💻 指令列表
 
@@ -82,7 +105,7 @@
 
 ## 📝 高级参数示例
 
-在 `nai` 或 `nai画图` 命令中，你可以使用以下高级参数（支持换行）：
+在 `nai` 或 `nai画图` 命令中，你可以使用以下高级参数（支持换行）；`nai自动画图` 的预设内容里也可以写同样的参数来个性化自动出图：
 
 **1. 氛围转移 (Vibe Transfer)**
 ```text

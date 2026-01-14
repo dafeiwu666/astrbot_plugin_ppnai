@@ -1,12 +1,13 @@
 """Image/base64 helpers for request assembly."""
 
+import asyncio
 import base64
 import io
 from typing import Iterable
 
 from PIL import Image as PILImage
 
-from astrbot import logger
+from astrbot.api import logger
 from astrbot.core.message.components import Image
 
 from .utils import get_base64_mime
@@ -122,4 +123,4 @@ async def resolve_image_as_jpeg(image: Image) -> str:
     logger.info(
         f"[nai] 角色保持: 接收到图片, 原始MIME={original_mime}, 原始大小={len(b64)} chars"
     )
-    return convert_to_jpeg_for_character_keep(original_data_uri)
+    return await asyncio.to_thread(convert_to_jpeg_for_character_keep, original_data_uri)
