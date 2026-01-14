@@ -44,7 +44,11 @@ def _select_best_target_size(width: int, height: int) -> tuple[int, int]:
 
 
 def convert_to_jpeg_for_character_keep(image_b64: str) -> str:
-    """Resize/pad image to allowed sizes and return JPEG data URI."""
+    """Resize/pad image to allowed sizes and return JPEG data URI.
+
+    This function is CPU-bound (PIL decode/resize/encode) and should NOT be called
+    directly from the event loop. Prefer `aconvert_to_jpeg_for_character_keep()`.
+    """
     # Parse input data URI or raw base64
     if image_b64.startswith("data:"):
         header, b64_data = image_b64.split(",", 1)
@@ -110,7 +114,22 @@ def convert_to_jpeg_for_character_keep(image_b64: str) -> str:
 
 
 def convert_multi_image_to_jpeg(images: Iterable[str]) -> list[str]:
+    """Sync batch conversion.
+
+    This is CPU-bound; prefer `aconvert_multi_image_to_jpeg()` in async flows.
+    """
     return [convert_to_jpeg_for_character_keep(img) for img in images]
+
+
+async def aconvert_to_jpeg_for_character_keep(image_b64: str) -> str:
+    """Async wrapper for `convert_to_jpeg_for_character_keep` (runs in a thread)."""
+    return await asyncio.to_thread(convert_to_jpeg_for_character_keep, image_b64)
+
+
+async def aconvert_multi_image_to_jpeg(images: Iterable[str]) -> list[str]:
+    """Async batch wrapper (runs the whole batch in a thread)."""
+    imgs = list(images)
+    return await asyncio.to_thread(convert_multi_image_to_jpeg, imgs)
 
 
 async def resolve_image_as_jpeg(image: Image) -> str:
@@ -123,4 +142,4 @@ async def resolve_image_as_jpeg(image: Image) -> str:
     logger.info(
         f"[nai] 角色保持: 接收到图片, 原始MIME={original_mime}, 原始大小={len(b64)} chars"
     )
-    return await asyncio.to_thread(convert_to_jpeg_for_character_keep, original_data_uri)
+    return await aconvert_to_jpeg_for_character_keep(original_data_uri)

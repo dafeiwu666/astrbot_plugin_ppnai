@@ -91,17 +91,6 @@ class ParamApplier(Protocol[T, TC]):
     async def __call__(self, **kwargs: Unpack[ParamApplierArgs[T, TC]]) -> Any: ...
 
 
-class PostParseHookArgs(TypedDict, Generic[T, TC]):
-    assembler: "ParamAssembler[T, TC]"
-    data: dict[str, Any]
-    model: T
-    ctx: TC
-
-
-class PostParseHook(Protocol[T, TC]):
-    async def __call__(self, **kwargs: Unpack[PostParseHookArgs[T, TC]]) -> Any: ...
-
-
 class ParamTransformerArgs(TypedDict, Generic[T, TC]):
     assembler: "ParamAssembler[T, TC]"
     data: dict[str, Any]
@@ -124,10 +113,7 @@ class ParamAssembler(Generic[T, TC]):
         self.appliers: dict[str, ApplierInfo[T, TC]] = {}
         self.start_process_hooks: list[StartProcessHook[T, TC]] = []
         self.end_process_hooks: list[ProcessHook[T, TC]] = []
-        self.preprocess_hooks: list[ParamApplier[T, TC]] = []
-        self.postprocess_hooks: list[ParamApplier[T, TC]] = []
         self.transformer_func: ParamTransformer[T, TC] | None = None
-        self.post_parse_hooks: list[PostParseHook[T, TC]] = []
 
     def to_appliers_map(
         self, appliers: dict[str, ApplierInfo[T, TC]]
@@ -169,18 +155,6 @@ class ParamAssembler(Generic[T, TC]):
         self.end_process_hooks.append(func)
         return func
 
-    def preprocess_hook(self, func: ParamApplier[T, TC]) -> ParamApplier[T, TC]:
-        self.preprocess_hooks.append(func)
-        return func
-
-    def postprocess_hook(self, func: ParamApplier[T, TC]) -> ParamApplier[T, TC]:
-        self.postprocess_hooks.append(func)
-        return func
-
-    def post_parse_hook(self, func: PostParseHook[T, TC]) -> PostParseHook[T, TC]:
-        self.post_parse_hooks.append(func)
-        return func
-
     def transformer(self, func: ParamTransformer[T, TC]) -> ParamTransformer[T, TC]:
         self.transformer_func = func
         return func
@@ -190,8 +164,6 @@ class ParamAssembler(Generic[T, TC]):
         assembler.appliers = self.appliers.copy()
         assembler.start_process_hooks = self.start_process_hooks.copy()
         assembler.end_process_hooks = self.end_process_hooks.copy()
-        assembler.preprocess_hooks = self.preprocess_hooks.copy()
-        assembler.postprocess_hooks = self.postprocess_hooks.copy()
         return assembler
 
     async def apply(
@@ -219,16 +191,8 @@ class ParamAssembler(Generic[T, TC]):
             raise KeyError(f"Unknown parameter key: {k}")
 
         for key, value in input_params:
-            for hook in self.preprocess_hooks:
-                await hook(
-                    assembler=self, value=value, data=data, images=images, ctx=ctx
-                )
             for applier in appliers_map[key]:
                 await applier.applier(
-                    assembler=self, value=value, data=data, images=images, ctx=ctx
-                )
-            for hook in self.postprocess_hooks:
-                await hook(
                     assembler=self, value=value, data=data, images=images, ctx=ctx
                 )
 
@@ -242,10 +206,6 @@ class ParamAssembler(Generic[T, TC]):
             )
 
         model = await self.transformer_func(assembler=self, data=data)
-
-        for hook in self.post_parse_hooks:
-            await hook(assembler=self, data=data, model=model, ctx=ctx)
-
         return model
 
 
