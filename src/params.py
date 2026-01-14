@@ -993,11 +993,6 @@ async def parse_req_with_remaining_images(
     req = await req_model_assembler.apply(input_params, images, config, is_whitelisted)
     post_check_limits(req, config, is_whitelisted)
     return req, images
-    
-    # 进行权限检查
-    post_check_limits(req, config, is_whitelisted)
-    
-    return req
 
 
 def delete_if_exists(v: MutableSequence[T], items: Iterable[T]):
