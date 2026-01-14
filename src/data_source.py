@@ -8,7 +8,6 @@ import io
 import asyncio
 import json
 import random
-import re
 import time
 import zipfile
 from typing import Any
@@ -20,21 +19,7 @@ from astrbot.api import logger
 from .config import Config
 from .models import Req
 
-BASE64_BLOB_RE = re.compile(r"(?:data:[^;]+;base64,)?[A-Za-z0-9+/]{512,}={0,2}")
-
-
-def _shorten_base64_segments(text: str) -> str:
-    """Replace long base64 blobs with placeholders for readability (log-safe)."""
-
-    def _replace(match: re.Match[str]) -> str:
-        chunk = match.group(0)
-        if chunk.startswith("data:"):
-            prefix, _, payload = chunk.partition(",")
-            mime = prefix[5:].split(";")[0] if len(prefix) > 5 else "unknown"
-            return f"<base64:{mime},len={len(payload)}>"
-        return f"<base64:len={len(chunk)}>"
-
-    return BASE64_BLOB_RE.sub(_replace, text)
+from .text_sanitize import shorten_base64_segments
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
@@ -137,7 +122,7 @@ def _sanitize_for_log(obj: Any) -> Any:
         return [_sanitize_for_log(item) for item in obj]
     elif isinstance(obj, str) and obj:
         # 对任意字段里的长 base64 做统一缩短，避免官方 API 请求体把图片整段打进日志
-        return _shorten_base64_segments(obj)
+        return shorten_base64_segments(obj)
     else:
         return obj
 

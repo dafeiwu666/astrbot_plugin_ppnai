@@ -88,7 +88,7 @@ def _unwrap_tool_context(
         for name in ("context", "ctx", "event", "agent_ctx", "astr_context"):
             try:
                 v = getattr(obj, name)
-            except Exception:
+            except AttributeError:
                 continue
             if v is not None:
                 res.append(v)
