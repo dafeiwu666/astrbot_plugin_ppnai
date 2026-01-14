@@ -8,7 +8,11 @@ from typing import Iterable
 from PIL import Image as PILImage
 
 from astrbot.api import logger
-from astrbot.core.message.components import Image
+try:
+    # Prefer public API exports when available
+    from astrbot.api.message_components import Image
+except Exception:  # pragma: no cover
+    from astrbot.core.message.components import Image
 
 from .utils import get_base64_mime
 

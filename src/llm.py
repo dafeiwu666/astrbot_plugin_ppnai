@@ -7,9 +7,15 @@ from pydantic.dataclasses import dataclass
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.star import Context
-from astrbot.core.agent.message import ImageURLPart, Message, TextPart
-from astrbot.core.agent.tool import FunctionTool
-from astrbot.core.astr_agent_context import AstrAgentContext
+try:
+    # Prefer public API exports when available (some AstrBot versions may not expose these)
+    from astrbot.api.agent.message import ImageURLPart, Message, TextPart
+    from astrbot.api.agent.tool import FunctionTool
+    from astrbot.api.astr_agent_context import AstrAgentContext
+except Exception:  # pragma: no cover
+    from astrbot.core.agent.message import ImageURLPart, Message, TextPart
+    from astrbot.core.agent.tool import FunctionTool
+    from astrbot.core.astr_agent_context import AstrAgentContext
 
 from .config import Config
 from .data_source import wrapped_generate

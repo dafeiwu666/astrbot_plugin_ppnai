@@ -9,7 +9,11 @@ from typing import (
 )
 from typing_extensions import TypedDict, Unpack
 
-from astrbot.core.message.components import BaseMessageComponent, Image
+try:
+    # Prefer public API exports when available
+    from astrbot.api.message_components import BaseMessageComponent, Image
+except Exception:  # pragma: no cover
+    from astrbot.core.message.components import BaseMessageComponent, Image
 
 try:
     # Newer AstrBot versions expose message components from astrbot.api

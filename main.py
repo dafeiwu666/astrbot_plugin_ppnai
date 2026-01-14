@@ -144,6 +144,19 @@ def _unwrap_tool_context(
         except Exception:  # noqa: BLE001
             return None
 
+    def _safe_getattr(obj: object, name: str):
+        """Best-effort getattr that tries to avoid triggering properties."""
+        try:
+            d = getattr(obj, "__dict__", None)
+            if isinstance(d, dict) and name in d:
+                return d.get(name)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            return getattr(obj, name)
+        except Exception:  # noqa: BLE001
+            return None
+
     # 1) Prefer framework public interfaces / getters (if present)
     direct_ctx = (
         _maybe_call0(wrapper, "get_context")
@@ -193,10 +206,7 @@ def _unwrap_tool_context(
             "run_context",
             "wrapper",
         ):
-            try:
-                v = getattr(obj, name)
-            except AttributeError:
-                continue
+            v = _safe_getattr(obj, name)
             if v is not None:
                 res.append(v)
         return res
@@ -204,11 +214,15 @@ def _unwrap_tool_context(
     found_ctx: Context | None = None
     found_event: AstrMessageEvent | None = None
 
+    max_depth = 4
+    max_nodes = 64
     frontier: list[object] = [wrapper]
     seen: set[int] = set()
-    for _depth in range(4):
+    for _depth in range(max_depth):
         next_frontier: list[object] = []
         for obj in frontier:
+            if len(seen) >= max_nodes:
+                break
             oid = id(obj)
             if oid in seen:
                 continue
@@ -222,19 +236,18 @@ def _unwrap_tool_context(
                 return found_ctx, found_event
 
             next_frontier.extend(_iter_children(obj))
+        if len(seen) >= max_nodes:
+            break
         frontier = next_frontier
 
     hints: dict[str, str] = {}
     for k in ("context", "ctx", "event", "agent_ctx", "astr_context", "message_event"):
-        if hasattr(wrapper, k):
-            try:
-                v = getattr(wrapper, k)
-            except Exception:  # noqa: BLE001
-                continue
+        v = _safe_getattr(wrapper, k)
+        if v is not None:
             hints[k] = type(v).__name__
     raise RuntimeError(
         "Unable to locate AstrBot Context/AstrMessageEvent on tool context; "
-        f"wrapper_type={type(wrapper).__name__}, hints={hints}"
+        f"wrapper_type={type(wrapper).__name__}, hints={hints}, visited={len(seen)}",
     )
 
 WAITING_REPLIES = [
