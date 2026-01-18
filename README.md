@@ -1,4 +1,4 @@
-## 📖 简介
+ ## 📖 简介
 
 本插件为 AstrBot 带来了强大的 **NovelAI** 绘图能力。它不仅仅是一个简单的 API 调用工具，还集成了 **LLM 辅助生图**、**自动绘图**、**额度管理**、**队列系统**以及 NovelAI 的高级功能（如氛围转移 Vibe Transfer、角色保持 Character Keep）。
 
