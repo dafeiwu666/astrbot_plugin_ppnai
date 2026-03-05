@@ -95,17 +95,25 @@ async def llm_generate_prepare_req(
 
         # 构建正向提示词：如果 AI 生成的提示词为空且未跳过默认，则用默认提示词；否则用 AI 生成的
         ai_tag = args.prompt.strip()
-        if not ai_tag and not skip_default_prompts:
-            data["tag"] = config.llm.default_prompt
+        default_p = config.llm.default_prompt.strip()
+        if skip_default_prompts:
+            data["tag"] = ai_tag or ""
         else:
-            data["tag"] = ai_tag
+            if ai_tag:
+                data["tag"] = f"{default_p}, {ai_tag}".strip(", ")
+            else:
+                data["tag"] = default_p
 
         # 构建反向提示词：如果 AI 生成的反向提示词为空且未跳过默认，则用默认反向提示词；否则用 AI 生成的
         ai_negative = args.additional_negative_prompt.strip()
-        if not ai_negative and not skip_default_prompts:
-            data["negative"] = config.llm.default_negative_prompt
+        default_n = config.llm.default_negative_prompt.strip()
+        if skip_default_prompts:
+            data["negative"] = ai_negative or ""
         else:
-            data["negative"] = ai_negative
+            if ai_negative:
+                data["negative"] = f"{default_n}, {ai_negative}".strip(", ")
+            else:
+                data["negative"] = default_n
 
         data["size"] = get_size_from_config(config, args.orientation)
 
