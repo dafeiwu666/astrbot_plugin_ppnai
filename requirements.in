@@ -1,2 +1,3 @@
 cookit[pydantic]
 jsonref
+socksio>=1.0.0

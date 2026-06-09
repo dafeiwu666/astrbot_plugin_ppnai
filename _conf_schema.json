@@ -28,6 +28,7 @@
     "type": "object",
     "default": {
       "base_url": "https://image.novelai.net",
+      "proxy_url": "",
       "tokens": [],
       "connect_timeout": 5.0,
       "read_timeout": 120.0,
@@ -44,6 +45,13 @@
         "default": "https://image.novelai.net",
         "description": "画图接口地址",
         "title": "Base Url",
+        "type": "string"
+      },
+      "proxy_url": {
+        "default": "",
+        "description": "画图接口代理地址",
+        "hint": "留空则不使用显式代理。支持 http://、https://、socks5://、socks5h://；Docker 中访问宿主机代理通常可填 http://host.docker.internal:7897",
+        "title": "Proxy Url",
         "type": "string"
       },
       "tokens": {

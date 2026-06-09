@@ -58,6 +58,7 @@
 | 配置项 | 说明 | 必填 |
 | :--- | :--- | :--- |
 | `general.merge_draw_to_chat_record` | 是否将画图结果合并为聊天记录（关闭后直接发送图片）。 | ❌ 否 |
+| `request.proxy_url` | 画图接口代理地址，留空则不使用显式代理。支持 `http://`、`https://`、`socks5://`、`socks5h://`，Docker 中访问宿主机代理通常可填 `http://host.docker.internal:7897`。 | ❌ 否 |
 | `request.tokens` | **授权 Token 列表**。请使用 NovelAI 官网获取的 `pst-` 开头的 Persistent API Token。支持多个 Token 轮询。 | ✅ 是 |
 | `request.opus_free_mode` | **Opus 免费模式**。开启后强制限制图片尺寸和步数，Opus 订阅账号不扣点数。 | ❌ 否 |
 | `llm.advanced_arg_generation_provider` | 用于将自然语言转换为绘图参数的 LLM 模型提供商。 | ❌ 否 |

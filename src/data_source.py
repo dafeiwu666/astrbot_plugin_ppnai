@@ -28,6 +28,25 @@ USER_AGENT = (
 )
 
 
+def _get_proxy_url(config: "Config") -> str | None:
+    proxy_url = str(getattr(config.request, "proxy_url", "") or "").strip()
+    return proxy_url or None
+
+
+def _ensure_proxy_dependencies(proxy_url: str | None) -> None:
+    if proxy_url is None:
+        return
+    if not proxy_url.lower().startswith(("socks5://", "socks5h://")):
+        return
+    try:
+        import socksio  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(
+            "当前运行环境未安装 socksio，无法使用 SOCKS 代理；"
+            "请重新安装插件依赖，或执行 pip install 'socksio>=1.0.0'"
+        ) from exc
+
+
 def create_client_from_config(config: "Config", token: str = ""):
     """创建 HTTP 客户端，配置官方 API 认证"""
     headers = {
@@ -38,6 +57,8 @@ def create_client_from_config(config: "Config", token: str = ""):
         "Origin": "https://novelai.net",
         "Referer": "https://novelai.net",
     }
+    proxy_url = _get_proxy_url(config)
+    _ensure_proxy_dependencies(proxy_url)
     
     # 注意：Bearer Token 建议按“每次请求”附带，避免共享 Client 时混用。
     return AsyncClient(
@@ -46,6 +67,7 @@ def create_client_from_config(config: "Config", token: str = ""):
         timeout=Timeout(
             config.request.connect_timeout, read=config.request.read_timeout
         ),
+        proxy=proxy_url,
     )
 
 
