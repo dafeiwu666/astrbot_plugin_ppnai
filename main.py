@@ -532,7 +532,7 @@ class Plugin(Star):
         self.cs_store = CharacterKeepStore(cs_dir, cssaying_path)
 
         self._auto_draw_store = AutoDrawStoreManager(data_dir)
-        self.vibe_cache_manager = VibeCacheManager(data_dir, ttl_days=config.general.vibe_cache_ttl_days)
+        self.vibe_cache_manager = VibeCacheManager(data_dir, ttl_days=self.config.general.vibe_cache_ttl_days)
         
         # 自动画图状态（按会话存储）
         # key: unified_msg_origin
