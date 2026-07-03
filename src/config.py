@@ -43,6 +43,26 @@ class GeneralConfig(BaseModel):
             },
         ),
     ] = True
+    save_original_images: Annotated[
+        bool,
+        Field(
+            description="自动画图时保存原图到磁盘",
+            json_schema_extra={
+                "hint": "开启后在 plugin_data 下保存 NAI 返回的原图。关闭则跳过落盘。",
+            },
+        ),
+    ] = True
+    compress_threshold_mb: Annotated[
+        int,
+        Field(
+            description="自动画图压缩阈值（MB）",
+            ge=1,
+            le=50,
+            json_schema_extra={
+                "hint": "原图超过此阈值时进行 PIL 压缩（转 JPEG 逐级降质）；未超则直接发送原图。默认 9MB",
+            },
+        ),
+    ] = 9
 
 
 class RequestConfig(BaseModel):

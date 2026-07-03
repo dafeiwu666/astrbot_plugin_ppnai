@@ -1,7 +1,13 @@
 """Auto-draw command handlers and hook logic."""
 
 import asyncio
+import io
+import os
+import time
 from collections.abc import AsyncIterator
+from pathlib import Path
+
+from PIL import Image as PILImage
 
 from astrbot.api import logger
 from astrbot.api.message_components import Image, Node, Nodes
@@ -20,6 +26,75 @@ from .handlers_shared import (
     merge_nai_params,
 )
 from .queue_flow import QueueRejected, acquire_generation_semaphore, reserve_queue
+
+
+try:
+    from astrbot.api.star import StarTools
+    _ORIGINALS_DIR = StarTools.get_data_dir("astrbot_plugin_ppnai") / "auto_draw_originals"
+except Exception:
+    _ORIGINALS_DIR = Path(__file__).parent.parent / "data" / "auto_draw_originals"
+
+ORIGINALS_DIR = _ORIGINALS_DIR
+JPEG_QUALITY = 85
+
+
+def _save_original_and_compress(img_bytes: bytes, max_bytes: int, save_original: bool = True) -> bytes:
+    """Save original image to disk and return a platform-safe compressed version.
+
+    Args:
+        img_bytes: raw bytes from NAI.
+        max_bytes: threshold in bytes above which compression kicks in.
+        save_original: if True, save raw image to plugin_data/auto_draw_originals/.
+
+    Returns:
+        JPEG bytes under max_bytes, or the original bytes if already small enough.
+    """
+    original_len = len(img_bytes)
+
+    # Save original (if enabled)
+    if save_original:
+        ORIGINALS_DIR.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        is_png = img_bytes[:4] == b'\x89PNG'
+        ext = ".png" if is_png else ".jpg"
+        filename = f"{ts}_{original_len}{ext}"
+        filepath = ORIGINALS_DIR / filename
+        filepath.write_bytes(img_bytes)
+        logger.info(f"[auto_draw] 原图已保存: {filepath} ({original_len:,} bytes)")
+
+    # If already under limit, return as-is
+    if original_len <= max_bytes:
+        logger.info(f"[auto_draw] 图片 {original_len:,} bytes ≤ {max_bytes:,}, 无需压缩")
+        return img_bytes
+
+    # Compress with PIL
+    pil_img = PILImage.open(io.BytesIO(img_bytes))
+    orig_w, orig_h = pil_img.size
+    rgb_img = pil_img.convert("RGB")
+
+    # Try progressive quality reduction
+    for quality in [95, 90, 85, 80, 75, 70, 65, 60]:
+        buf = io.BytesIO()
+        rgb_img.save(buf, format="JPEG", quality=quality, optimize=True)
+        compressed = buf.getvalue()
+        if len(compressed) <= max_bytes:
+            logger.info(
+                f"[auto_draw] 压缩完成: {original_len:,} → {len(compressed):,} bytes "
+                f"(JPEG q={quality}, {orig_w}x{orig_h})"
+            )
+            return compressed
+
+    # Last resort: resize to half dimensions
+    half_w, half_h = max(1, orig_w // 2), max(1, orig_h // 2)
+    rgb_img = rgb_img.resize((half_w, half_h), PILImage.Resampling.LANCZOS)
+    buf = io.BytesIO()
+    rgb_img.save(buf, format="JPEG", quality=80, optimize=True)
+    compressed = buf.getvalue()
+    logger.warning(
+        f"[auto_draw] 极端压缩: {original_len:,} → {len(compressed):,} bytes "
+        f"(resize {orig_w}x{orig_h}→{half_w}x{half_h}, JPEG q=80)"
+    )
+    return compressed
 
 
 async def handle_auto_draw_off(plugin, event) -> AsyncIterator:
@@ -424,6 +499,16 @@ async def _auto_draw_generate(
                             )
 
                         images.append(await plugin._run_with_retry(_do_generate))
+
+                # ── 原图留底 + 压缩 ──
+                images = [
+                    _save_original_and_compress(
+                        img,
+                        max_bytes=plugin.config.general.compress_threshold_mb * 1024 * 1024,
+                        save_original=plugin.config.general.save_original_images,
+                    )
+                    for img in images
+                ]
 
                 sender_id = event.get_sender_id()
                 sender_name = event.get_sender_name()

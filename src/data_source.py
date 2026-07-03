@@ -4,9 +4,12 @@ NovelAI 官方 API 数据源模块
 适配官方 NovelAI API (https://image.novelai.net)
 """
 
+import hashlib
 import io
 import asyncio
+import base64
 import json
+import os
 import random
 import time
 import zipfile
@@ -55,6 +58,59 @@ class GenerateError(Exception):
         self.message = message
         self.status_code = status_code
         self.response_body = response_body
+
+
+# ============================================================
+# Vibe 编码缓存 —— 避免重复调 /ai/encode-vibe 被重复扣 Anlas
+# ============================================================
+
+try:
+    from astrbot.api.star import StarTools
+    _VIBE_CACHE_DIR = StarTools.get_data_dir("astrbot_plugin_ppnai")
+except Exception:
+    # fallback: plugin 未初始化时用旧路径
+    import os as _os
+    _VIBE_CACHE_DIR = _os.path.join(
+        _os.path.dirname(_os.path.dirname(__file__)), "data"
+    )
+
+_VIBE_CACHE_FILE = os.path.join(str(_VIBE_CACHE_DIR), "vibe_encode_cache.json")
+_vibe_encode_cache: dict[str, str] = {}
+_vibe_cache_loaded = False
+
+
+def _load_vibe_cache() -> None:
+    global _vibe_encode_cache, _vibe_cache_loaded
+    if _vibe_cache_loaded:
+        return
+    _vibe_cache_loaded = True
+    try:
+        if os.path.exists(_VIBE_CACHE_FILE):
+            with open(_VIBE_CACHE_FILE, "r", encoding="utf-8") as f:
+                _vibe_encode_cache = json.load(f)
+            logger.info(
+                f"[nai] vibe 编码缓存已加载: {len(_vibe_encode_cache)} 条"
+            )
+    except Exception as e:
+        logger.warning(f"[nai] vibe 编码缓存加载失败，将使用空缓存: {e}")
+        _vibe_encode_cache = {}
+
+
+def _save_vibe_cache() -> None:
+    try:
+        os.makedirs(os.path.dirname(_VIBE_CACHE_FILE), exist_ok=True)
+        with open(_VIBE_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(_vibe_encode_cache, f, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[nai] vibe 编码缓存保存失败: {e}")
+
+
+def _make_vibe_cache_key(img_b64: str, info_extract: float) -> str:
+    """用图片 base64 + info_extract 的 SHA256 作为缓存键。"""
+    h = hashlib.sha256()
+    h.update(img_b64.encode("utf-8"))
+    h.update(f"{info_extract:.6f}".encode("utf-8"))
+    return h.hexdigest()
 
     def __str__(self) -> str:
         return f"{self.message} (status={self.status_code})"
@@ -209,6 +265,7 @@ def _convert_req_to_official_format(req: Req, opus_free_mode: bool = False) -> d
         # v4 模型必需参数
         "dynamic_thresholding": False,
         "controlnet_strength": 1,
+        "normalize_reference_strength_multiple": True,
         "legacy": False,
         "add_original_image": True,
         "legacy_v3_extend": False,
@@ -344,6 +401,67 @@ async def generate_image(
     """
     # 转换请求格式
     request_body = _convert_req_to_official_format(req, opus_free_mode=opus_free_mode)
+    
+    # Vibe Transfer: v4+ 模型需要先通过 /ai/encode-vibe 编码参考图
+    if request_body["parameters"].get("reference_image_multiple"):
+        _load_vibe_cache()
+        model = request_body.get("model", "")
+        vibe_images = request_body["parameters"]["reference_image_multiple"]
+        vibe_info_extracts = request_body["parameters"].get(
+            "reference_information_extracted_multiple", []
+        )
+        encoded_vibes = []
+        cache_dirty = False
+        
+        for i, img_b64 in enumerate(vibe_images):
+            info_extract = vibe_info_extracts[i] if i < len(vibe_info_extracts) else 0.8
+            cache_key = _make_vibe_cache_key(img_b64, info_extract)
+            
+            # 检查缓存
+            if cache_key in _vibe_encode_cache:
+                encoded_vibes.append(_vibe_encode_cache[cache_key])
+                logger.info(
+                    f"[nai] vibe 编码缓存命中 ({i+1}/{len(vibe_images)}, "
+                    f"info_extract={info_extract})"
+                )
+                continue
+            
+            # 缓存未命中 → 调 encode-vibe
+            try:
+                encode_resp = await cli.post(
+                    "/ai/encode-vibe",
+                    json={
+                        "image": img_b64,
+                        "information_extracted": info_extract,
+                        "model": model,
+                    },
+                    headers={"Authorization": f"Bearer {token}"} if token else None,
+                )
+                if encode_resp.status_code == 200:
+                    encoded_b64 = base64.b64encode(encode_resp.content).decode("utf-8")
+                    encoded_vibes.append(encoded_b64)
+                    _vibe_encode_cache[cache_key] = encoded_b64
+                    cache_dirty = True
+                    logger.info(
+                        f"[nai] vibe 编码成功 ({i+1}/{len(vibe_images)}, "
+                        f"已写入缓存)"
+                    )
+                else:
+                    logger.error(
+                        f"[nai] vibe 编码失败 ({i+1}/{len(vibe_images)}): "
+                        f"status={encode_resp.status_code}, body={encode_resp.text[:200]}"
+                    )
+                    encoded_vibes.append(img_b64)  # fallback
+            except Exception as e:
+                logger.error(
+                    f"[nai] vibe 编码异常 ({i+1}/{len(vibe_images)}): {e}"
+                )
+                encoded_vibes.append(img_b64)  # fallback
+        
+        if cache_dirty:
+            _save_vibe_cache()
+        
+        request_body["parameters"]["reference_image_multiple"] = encoded_vibes
     
     # 记录请求日志（隐藏敏感信息）
     sanitized_body = _sanitize_for_log(request_body)

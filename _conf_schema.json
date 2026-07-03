@@ -4,7 +4,9 @@
     "type": "object",
     "default": {
       "help_t2i": true,
-      "merge_draw_to_chat_record": true
+      "merge_draw_to_chat_record": true,
+      "save_original_images": true,
+      "compress_threshold_mb": 9
     },
     "description": "通用设置",
     "items": {
@@ -20,6 +22,22 @@
         "hint": "关闭后将直接发送图片，不合并存在被举报风险，请自行评估",
         "title": "Merge Draw To Chat Record",
         "type": "bool"
+      },
+      "save_original_images": {
+        "default": true,
+        "description": "自动画图时保存原图到磁盘",
+        "hint": "开启后在 plugin_data 下保存 NAI 返回的原图。关闭则跳过落盘。",
+        "title": "Save Original Images",
+        "type": "bool"
+      },
+      "compress_threshold_mb": {
+        "default": 9,
+        "description": "自动画图压缩阈值（MB）",
+        "hint": "原图超过此阈值时进行 PIL 压缩（转 JPEG 逐级降质）；未超则直接发送原图。默认 9MB",
+        "maximum": 50,
+        "minimum": 1,
+        "title": "Compress Threshold Mb",
+        "type": "int"
       }
     }
   },
@@ -47,19 +65,18 @@
         "type": "string"
       },
       "tokens": {
-        "default": [],
         "description": "授权 Token 列表",
         "hint": "支持配置多个 Token，系统会轮询使用。请使用 NovelAI 官方 Persistent API Token（以 pst- 开头）",
-        "title": "Tokens",
-        "type": "list",
         "items": {
           "type": "string"
-        }
+        },
+        "title": "Tokens",
+        "type": "list"
       },
       "connect_timeout": {
         "default": 5,
         "description": "请求画图接口时的连接超时时间（秒）",
-        "exclusiveMinimum": 0.0,
+        "exclusiveMinimum": 0,
         "hint": "值需大于 0",
         "title": "Connect Timeout",
         "type": "float"
@@ -67,7 +84,7 @@
       "read_timeout": {
         "default": 120,
         "description": "请求画图接口时的读取超时时间（秒）",
-        "exclusiveMinimum": 0.0,
+        "exclusiveMinimum": 0,
         "hint": "值需大于 0，相当于从连接到后端起，到等待画图完成的超时时间",
         "title": "Read Timeout",
         "type": "float"
@@ -75,45 +92,45 @@
       "max_concurrent": {
         "default": 2,
         "description": "最大并发请求数",
-        "minimum": 0,
-        "maximum": 10,
+        "ge": 0,
         "hint": "同时处理的最大请求数量，超出的请求会排队等待。建议设置为 1-3；若填 0 会自动按 1 处理",
+        "le": 10,
         "title": "Max Concurrent",
         "type": "int"
       },
       "max_queue_size": {
         "default": 10,
         "description": "最大队列长度",
-        "minimum": 1,
-        "maximum": 50,
         "hint": "排队等待的最大请求数量，超出时新请求会被拒绝。设置为 0 表示不限制",
+        "maximum": 50,
+        "minimum": 1,
         "title": "Max Queue Size",
         "type": "int"
       },
       "max_n": {
         "default": 4,
         "description": "批量生成上限",
-        "minimum": 0,
-        "maximum": 50,
         "hint": "限制 n 参数的最大值。设置为 0 表示不限制",
+        "maximum": 50,
+        "minimum": 0,
         "title": "Max N",
         "type": "int"
       },
       "retry_times": {
         "default": 0,
         "description": "画图失败重试次数",
-        "minimum": 0,
-        "maximum": 10,
         "hint": "当 /nai、nai画图、自动画图 的生成请求出现错误时，内部自动重试的次数（不外显）。0 表示不重试。",
+        "maximum": 10,
+        "minimum": 0,
         "title": "Retry Times",
         "type": "int"
       },
       "retry_wait": {
         "default": 1.0,
         "description": "重试等待时间（秒）",
-        "minimum": 0.0,
-        "maximum": 60.0,
         "hint": "每次重试前等待的时间（秒）。仅在 retry_times>0 时生效。",
+        "maximum": 60,
+        "minimum": 0,
         "title": "Retry Wait",
         "type": "float"
       },
@@ -136,7 +153,9 @@
       "allow_i2i": true,
       "allow_vibe_transfer": true,
       "regex_replacements": [],
-      "enable_vision": false
+      "enable_vision": false,
+      "vision_image_limit": 0,
+      "vision_provider": ""
     },
     "description": "LLM 设置",
     "items": {
@@ -177,11 +196,11 @@
         "default": [],
         "description": "正则清洗表达式",
         "hint": "用于清洗 AI 生成内容的正则表达式，每行一个\n格式：正则表达式|||替换内容（如果省略替换内容则删除匹配项）\n例如：```markdown.*?```|||  会删除所有markdown代码块",
-        "title": "Regex Replacements",
-        "type": "list",
         "items": {
           "type": "string"
-        }
+        },
+        "title": "Regex Replacements",
+        "type": "text"
       },
       "enable_vision": {
         "default": false,
@@ -189,6 +208,21 @@
         "hint": "开启后，nai画图/自动画图会将用户消息中的图片以多模态 image_url 方式传给用于高级参数生成的模型（需要模型支持 vision）。",
         "title": "Enable Vision",
         "type": "bool"
+      },
+      "vision_image_limit": {
+        "default": 0,
+        "description": "视觉输入图片数量上限（0 表示不限制）",
+        "hint": "用于高级参数生成模型的多模态图片数量上限。设置过大可能导致请求体/Token 过大、速度变慢或模型拒绝。",
+        "minimum": 0,
+        "title": "Vision Image Limit",
+        "type": "int"
+      },
+      "vision_provider": {
+        "_special": "select_provider",
+        "default": "",
+        "description": "用于视觉输入的模型（可选）",
+        "title": "Vision Provider",
+        "type": "string"
       }
     }
   },
@@ -214,6 +248,11 @@
         "options": [
           "model",
           "negative",
+          "tag",
+          "prepend_tag",
+          "append_tag",
+          "prepend_negative",
+          "append_negative",
           "artist",
           "size",
           "seed",
@@ -478,8 +517,8 @@
         "default": 1,
         "description": "默认氛围转移信息提取度",
         "hint": "值需在 0 到 1 之间",
-        "maximum": 1.0,
-        "minimum": 0.0,
+        "maximum": 1,
+        "minimum": 0,
         "title": "Vibe Transfer Info Extract",
         "type": "float"
       },
@@ -487,8 +526,8 @@
         "default": 0.5,
         "description": "默认氛围转移参考强度",
         "hint": "值需在 0 到 1 之间",
-        "maximum": 1.0,
-        "minimum": 0.0,
+        "maximum": 1,
+        "minimum": 0,
         "title": "Vibe Transfer Ref Strength",
         "type": "float"
       },
@@ -502,8 +541,8 @@
         "default": 0.5,
         "description": "默认角色保持参考强度",
         "hint": "值需在 0 到 1 之间",
-        "maximum": 1.0,
-        "minimum": 0.0,
+        "maximum": 1,
+        "minimum": 0,
         "title": "Character Keep Strength",
         "type": "float"
       }
