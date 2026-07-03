@@ -43,7 +43,7 @@ class GeneralConfig(BaseModel):
             },
         ),
     ] = True
-    save_original_images: Annotated[
+    auto_draw_save_original: Annotated[
         bool,
         Field(
             description="自动画图时保存原图到磁盘",
@@ -51,8 +51,8 @@ class GeneralConfig(BaseModel):
                 "hint": "开启后在 plugin_data 下保存 NAI 返回的原图。关闭则跳过落盘。",
             },
         ),
-    ] = True
-    compress_threshold_mb: Annotated[
+    ] = False
+    auto_draw_compress_threshold_mb: Annotated[
         int,
         Field(
             description="自动画图压缩阈值（MB）",

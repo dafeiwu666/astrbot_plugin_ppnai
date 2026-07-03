@@ -504,8 +504,8 @@ async def _auto_draw_generate(
                 images = [
                     _save_original_and_compress(
                         img,
-                        max_bytes=plugin.config.general.compress_threshold_mb * 1024 * 1024,
-                        save_original=plugin.config.general.save_original_images,
+                        max_bytes=plugin.config.general.auto_draw_compress_threshold_mb * 1024 * 1024,
+                        save_original=plugin.config.general.auto_draw_save_original,
                     )
                     for img in images
                 ]
