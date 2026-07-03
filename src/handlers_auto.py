@@ -1,10 +1,9 @@
 """Auto-draw command handlers and hook logic."""
 
 import asyncio
-import io
-from datetime import datetime
 from collections.abc import AsyncIterator
-from pathlib import Path
+from datetime import datetime
+from io import BytesIO
 
 from PIL import Image as PILImage
 
@@ -25,9 +24,6 @@ from .handlers_shared import (
     merge_nai_params,
 )
 from .queue_flow import QueueRejected, acquire_generation_semaphore, reserve_queue
-
-
-JPEG_QUALITY = 85
 
 
 def _save_original_and_compress(
@@ -73,13 +69,13 @@ def _save_original_and_compress(
         return img_bytes
 
     # Compress with PIL
-    pil_img = PILImage.open(io.BytesIO(img_bytes))
+    pil_img = PILImage.open(BytesIO(img_bytes))
     orig_w, orig_h = pil_img.size
     rgb_img = pil_img.convert("RGB")
 
     # Try progressive quality reduction
     for quality in [95, 90, 85, 80, 75, 70, 65, 60]:
-        buf = io.BytesIO()
+        buf = BytesIO()
         rgb_img.save(buf, format="JPEG", quality=quality, optimize=True)
         compressed = buf.getvalue()
         if len(compressed) <= max_bytes:
@@ -92,7 +88,7 @@ def _save_original_and_compress(
     # Last resort: resize to half dimensions
     half_w, half_h = max(1, orig_w // 2), max(1, orig_h // 2)
     rgb_img = rgb_img.resize((half_w, half_h), PILImage.Resampling.LANCZOS)
-    buf = io.BytesIO()
+    buf = BytesIO()
     rgb_img.save(buf, format="JPEG", quality=80, optimize=True)
     compressed = buf.getvalue()
     logger.warning(
