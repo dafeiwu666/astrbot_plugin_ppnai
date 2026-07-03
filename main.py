@@ -523,6 +523,7 @@ class Plugin(Star):
         
         # 初始化用户管理器和预设管理器，数据存储在插件目录下的 data 文件夹
         data_dir: Path = StarTools.get_data_dir(PLUGIN_NAME)
+        self._data_dir = data_dir
         self.user_manager = UserManager(data_dir)
         self.preset_manager = PresetManager(data_dir)
 

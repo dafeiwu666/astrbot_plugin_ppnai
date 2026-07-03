@@ -6,7 +6,8 @@
       "help_t2i": true,
       "merge_draw_to_chat_record": true,
       "auto_draw_save_original": false,
-      "auto_draw_compress_threshold_mb": 9
+      "auto_draw_compress_threshold_mb": 9,
+      "auto_draw_enable_compression": true
     },
     "description": "通用设置",
     "items": {
@@ -38,6 +39,13 @@
         "minimum": 1,
         "title": "Auto Draw Compress Threshold Mb",
         "type": "int"
+      },
+      "auto_draw_enable_compression": {
+        "default": true,
+        "description": "启用自动画图压缩",
+        "hint": "关闭后原图不压缩直接发送（可能产生超大文件）。阈值由 auto_draw_compress_threshold_mb 控制。",
+        "title": "Auto Draw Enable Compression",
+        "type": "bool"
       }
     }
   },

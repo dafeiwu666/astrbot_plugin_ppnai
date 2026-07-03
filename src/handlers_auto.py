@@ -27,19 +27,13 @@ from .handlers_shared import (
 from .queue_flow import QueueRejected, acquire_generation_semaphore, reserve_queue
 
 
-try:
-    from astrbot.api.star import StarTools
-    _ORIGINALS_DIR = StarTools.get_data_dir("astrbot_plugin_ppnai") / "auto_draw_originals"
-except Exception:
-    _ORIGINALS_DIR = Path(__file__).parent.parent / "data" / "auto_draw_originals"
-
-ORIGINALS_DIR = _ORIGINALS_DIR
 JPEG_QUALITY = 85
 
 
 def _save_original_and_compress(
     img_bytes: bytes,
     max_bytes: int,
+    originals_dir: "Path | None" = None,
     save_original: bool = True,
     enable_compression: bool = True,
 ) -> bytes:
@@ -48,7 +42,9 @@ def _save_original_and_compress(
     Args:
         img_bytes: raw bytes from NAI.
         max_bytes: threshold in bytes above which compression kicks in.
-        save_original: if True, save raw image to plugin_data/auto_draw_originals/.
+        originals_dir: directory for saving originals; if None, saving is skipped
+            even when save_original=True.
+        save_original: if True, save raw image to originals_dir.
 
     Returns:
         JPEG bytes under max_bytes, or the original bytes if already small enough.
@@ -56,13 +52,13 @@ def _save_original_and_compress(
     original_len = len(img_bytes)
 
     # Save original (if enabled)
-    if save_original:
-        ORIGINALS_DIR.mkdir(parents=True, exist_ok=True)
+    if save_original and originals_dir is not None:
+        originals_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         is_png = img_bytes[:4] == b'\x89PNG'
         ext = ".png" if is_png else ".jpg"
         filename = f"{ts}_{original_len}{ext}"
-        filepath = ORIGINALS_DIR / filename
+        filepath = originals_dir / filename
         filepath.write_bytes(img_bytes)
         logger.info(f"[auto_draw] 原图已保存: {filepath} ({original_len:,} bytes)")
 
@@ -511,10 +507,12 @@ async def _auto_draw_generate(
                         images.append(await plugin._run_with_retry(_do_generate))
 
                 # ── 原图留底 + 压缩 ──
+                originals_dir = plugin._data_dir / "auto_draw_originals"
                 images = [
                     _save_original_and_compress(
                         img,
                         max_bytes=plugin.config.general.auto_draw_compress_threshold_mb * 1024 * 1024,
+                        originals_dir=originals_dir,
                         save_original=plugin.config.general.auto_draw_save_original,
                         enable_compression=plugin.config.general.auto_draw_enable_compression,
                     )
