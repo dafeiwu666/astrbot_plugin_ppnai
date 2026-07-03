@@ -58,6 +58,9 @@ class GenerateError(Exception):
         self.status_code = status_code
         self.response_body = response_body
 
+    def __str__(self) -> str:
+        return f"{self.message} (status={self.status_code})"
+
 
 # ============================================================
 # Vibe 编码缓存 —— 避免重复调 /ai/encode-vibe 被重复扣 Anlas
