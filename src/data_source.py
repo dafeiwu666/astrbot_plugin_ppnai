@@ -9,7 +9,6 @@ import io
 import asyncio
 import base64
 import json
-import os
 import random
 import time
 import zipfile
@@ -64,56 +63,142 @@ class GenerateError(Exception):
 # Vibe 编码缓存 —— 避免重复调 /ai/encode-vibe 被重复扣 Anlas
 # ============================================================
 
-try:
-    from astrbot.api.star import StarTools
-    _VIBE_CACHE_DIR = StarTools.get_data_dir("astrbot_plugin_ppnai")
-except Exception:
-    # fallback: plugin 未初始化时用旧路径
-    import os as _os
-    _VIBE_CACHE_DIR = _os.path.join(
-        _os.path.dirname(_os.path.dirname(__file__)), "data"
-    )
+class VibeCacheManager:
+    """Vibe 编码缓存管理器 — 与其他 Manager 一致的 data_dir 注入模式
 
-_VIBE_CACHE_FILE = os.path.join(str(_VIBE_CACHE_DIR), "vibe_encode_cache.json")
-_vibe_encode_cache: dict[str, str] = {}
-_vibe_cache_loaded = False
+    缓存格式 (v2):
+        {"hash123": {"v": "base64value", "ts": 1234567890.0}, ...}
+    兼容旧格式 (v1):
+        {"hash123": "base64value", ...}  → 加载时自动迁移至 v2
+    """
 
+    def __init__(self, data_dir: "Path", ttl_days: int = 7) -> None:
+        self._data_file = data_dir / "vibe_encode_cache.json"
+        self._data_dir = data_dir
+        self._ttl_days = ttl_days
+        self._cache: dict[str, dict[str, object]] | None = None
 
-def _load_vibe_cache() -> None:
-    global _vibe_encode_cache, _vibe_cache_loaded
-    if _vibe_cache_loaded:
-        return
-    _vibe_cache_loaded = True
-    try:
-        if os.path.exists(_VIBE_CACHE_FILE):
-            with open(_VIBE_CACHE_FILE, "r", encoding="utf-8") as f:
-                _vibe_encode_cache = json.load(f)
+    @property
+    def ttl_days(self) -> int:
+        return self._ttl_days
+
+    @ttl_days.setter
+    def ttl_days(self, value: int) -> None:
+        self._ttl_days = value
+
+    def _ensure_dir(self) -> None:
+        self._data_dir.mkdir(parents=True, exist_ok=True)
+
+    def _load(self) -> dict[str, dict[str, object]]:
+        if self._cache is not None:
+            return self._cache
+        self._ensure_dir()
+        try:
+            if self._data_file.exists():
+                raw = json.loads(self._data_file.read_text("utf-8"))
+                migrated: dict[str, dict[str, object]] = {}
+                needs_save = False
+                for key, val in raw.items():
+                    if isinstance(val, dict) and "v" in val and "ts" in val:
+                        # v2 格式 — 直接使用
+                        migrated[key] = val
+                    elif isinstance(val, str):
+                        # v1 格式 — 自动迁移，时间戳设为当前时间
+                        migrated[key] = {"v": val, "ts": time.time()}
+                        needs_save = True
+                    else:
+                        logger.warning(f"[nai] vibe 缓存条目格式异常，已跳过: {key}")
+                self._cache = migrated
+                logger.info(f"[nai] vibe 编码缓存已加载: {len(self._cache)} 条")
+                if needs_save:
+                    self._save()
+                    logger.info("[nai] vibe 缓存已从 v1 迁移至 v2 格式")
+            else:
+                self._cache = {}
+        except Exception as e:
+            logger.warning(f"[nai] vibe 编码缓存加载失败，将使用空缓存: {e}")
+            self._cache = {}
+        return self._cache
+
+    def _save(self) -> None:
+        if self._cache is None:
+            return
+        try:
+            self._ensure_dir()
+            self._data_file.write_text(json.dumps(self._cache, ensure_ascii=False), "utf-8")
+        except Exception as e:
+            logger.error(f"[nai] vibe 编码缓存保存失败: {e}")
+
+    def _is_expired(self, entry: dict[str, object]) -> bool:
+        ts = entry.get("ts")
+        if not isinstance(ts, (int, float)):
+            return True
+        age_secs = time.time() - float(ts)
+        return age_secs > self._ttl_days * 86400
+
+    @staticmethod
+    def make_key(img_b64: str, info_extract: float) -> str:
+        h = hashlib.sha256()
+        h.update(img_b64.encode("utf-8"))
+        h.update(f"{info_extract:.6f}".encode("utf-8"))
+        return h.hexdigest()
+
+    def get(self, key: str) -> str | None:
+        cache = self._load()
+        entry = cache.get(key)
+        if entry is None:
+            return None
+        if self._is_expired(entry):
             logger.info(
-                f"[nai] vibe 编码缓存已加载: {len(_vibe_encode_cache)} 条"
+                f"[nai] vibe 缓存已过期 (TTL={self._ttl_days}天), 已删除: {key[:16]}..."
             )
-    except Exception as e:
-        logger.warning(f"[nai] vibe 编码缓存加载失败，将使用空缓存: {e}")
-        _vibe_encode_cache = {}
+            del cache[key]
+            self._save()
+            return None
+        return str(entry["v"])
 
+    def put(self, key: str, value: str) -> None:
+        self._load()[key] = {"v": value, "ts": time.time()}
+        self._save()
 
-def _save_vibe_cache() -> None:
-    try:
-        os.makedirs(os.path.dirname(_VIBE_CACHE_FILE), exist_ok=True)
-        with open(_VIBE_CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(_vibe_encode_cache, f, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"[nai] vibe 编码缓存保存失败: {e}")
+    def remove(self, key: str) -> bool:
+        """删除单条缓存，返回是否成功删除"""
+        cache = self._load()
+        if key in cache:
+            del cache[key]
+            self._save()
+            logger.info(f"[nai] vibe 缓存已删除: {key[:16]}...")
+            return True
+        return False
 
+    def reset(self) -> None:
+        """一键清空所有缓存"""
+        self._cache = {}
+        try:
+            if self._data_file.exists():
+                self._data_file.unlink()
+            logger.info("[nai] vibe 编码缓存已重置（全部清空）")
+        except Exception as e:
+            logger.error(f"[nai] vibe 缓存重置失败: {e}")
 
-def _make_vibe_cache_key(img_b64: str, info_extract: float) -> str:
-    """用图片 base64 + info_extract 的 SHA256 作为缓存键。"""
-    h = hashlib.sha256()
-    h.update(img_b64.encode("utf-8"))
-    h.update(f"{info_extract:.6f}".encode("utf-8"))
-    return h.hexdigest()
+    def cleanup_expired(self) -> int:
+        """清理所有过期条目，返回清理数量"""
+        cache = self._load()
+        expired_keys = [k for k, v in cache.items() if self._is_expired(v)]
+        for k in expired_keys:
+            del cache[k]
+        if expired_keys:
+            self._save()
+            logger.info(f"[nai] vibe 缓存过期清理: {len(expired_keys)} 条")
+        return len(expired_keys)
 
     def __str__(self) -> str:
-        return f"{self.message} (status={self.status_code})"
+        cache = self._load() if self._cache is not None else {}
+        return (
+            f"VibeCacheManager({len(cache)} entries, "
+            f"TTL={self._ttl_days} days, "
+            f"file={self._data_file})"
+        )
 
 
 def _sanitize_for_log(obj: Any) -> Any:
@@ -381,94 +466,79 @@ def _convert_req_to_official_format(req: Req, opus_free_mode: bool = False) -> d
     return request_body
 
 
-async def generate_image(
+async def _encode_single_vibe(
     cli: AsyncClient,
-    req: Req,
-    opus_free_mode: bool = False,
-    start_time: int | None = None,
+    idx: int,
+    total: int,
+    img_b64: str,
+    info_extract: float,
+    model: str,
     token: str = "",
-) -> bytes:
-    """
-    调用官方 NovelAI API 生成图片
-    
-    Args:
-        cli: HTTP 客户端
-        req: 请求对象
-        opus_free_mode: 是否开启 Opus 免费模式
-    
+) -> str:
+    """调用 NovelAI /ai/encode-vibe 将参考图编码为 vibe 向量。
+
+    encode-vibe 是 vibe transfer 链路的前置步骤：
+    将原始图片 base64 POST 到 /ai/encode-vibe，服务端返回二进制编码向量；
+    客户端将其 base64 后再放入 generate-image 请求的 reference_image_multiple。
+
+    若编码失败（网络/服务端错误），安全降级为返回原始 base64 作为 fallback，
+    避免因编码步骤失败而中断整个生图流程。
+
     Returns:
-        生成的图片字节数据
+        成功时返回编码向量的 base64 字符串；失败时返回原始 img_b64。
     """
-    # 转换请求格式
-    request_body = _convert_req_to_official_format(req, opus_free_mode=opus_free_mode)
-    
-    # Vibe Transfer: v4+ 模型需要先通过 /ai/encode-vibe 编码参考图
-    if request_body["parameters"].get("reference_image_multiple"):
-        _load_vibe_cache()
-        model = request_body.get("model", "")
-        vibe_images = request_body["parameters"]["reference_image_multiple"]
-        vibe_info_extracts = request_body["parameters"].get(
-            "reference_information_extracted_multiple", []
+    try:
+        encode_resp = await cli.post(
+            "/ai/encode-vibe",
+            json={
+                "image": img_b64,
+                "information_extracted": info_extract,
+                "model": model,
+            },
+            headers={"Authorization": f"Bearer {token}"} if token else None,
         )
-        encoded_vibes = []
-        cache_dirty = False
-        
-        for i, img_b64 in enumerate(vibe_images):
-            info_extract = vibe_info_extracts[i] if i < len(vibe_info_extracts) else 0.8
-            cache_key = _make_vibe_cache_key(img_b64, info_extract)
-            
-            # 检查缓存
-            if cache_key in _vibe_encode_cache:
-                encoded_vibes.append(_vibe_encode_cache[cache_key])
-                logger.info(
-                    f"[nai] vibe 编码缓存命中 ({i+1}/{len(vibe_images)}, "
-                    f"info_extract={info_extract})"
-                )
-                continue
-            
-            # 缓存未命中 → 调 encode-vibe
-            try:
-                encode_resp = await cli.post(
-                    "/ai/encode-vibe",
-                    json={
-                        "image": img_b64,
-                        "information_extracted": info_extract,
-                        "model": model,
-                    },
-                    headers={"Authorization": f"Bearer {token}"} if token else None,
-                )
-                if encode_resp.status_code == 200:
-                    encoded_b64 = base64.b64encode(encode_resp.content).decode("utf-8")
-                    encoded_vibes.append(encoded_b64)
-                    _vibe_encode_cache[cache_key] = encoded_b64
-                    cache_dirty = True
-                    logger.info(
-                        f"[nai] vibe 编码成功 ({i+1}/{len(vibe_images)}, "
-                        f"已写入缓存)"
-                    )
-                else:
-                    logger.error(
-                        f"[nai] vibe 编码失败 ({i+1}/{len(vibe_images)}): "
-                        f"status={encode_resp.status_code}, body={encode_resp.text[:200]}"
-                    )
-                    encoded_vibes.append(img_b64)  # fallback
-            except Exception as e:
-                logger.error(
-                    f"[nai] vibe 编码异常 ({i+1}/{len(vibe_images)}): {e}"
-                )
-                encoded_vibes.append(img_b64)  # fallback
-        
-        if cache_dirty:
-            _save_vibe_cache()
-        
-        request_body["parameters"]["reference_image_multiple"] = encoded_vibes
-    
+        if encode_resp.status_code == 200:
+            encoded_b64 = base64.b64encode(encode_resp.content).decode("utf-8")
+            logger.info(
+                f"[nai] vibe 编码成功 ({idx+1}/{total})"
+            )
+            return encoded_b64
+        else:
+            logger.error(
+                f"[nai] vibe 编码失败 ({idx+1}/{total}): "
+                f"status={encode_resp.status_code}, body={encode_resp.text[:200]}"
+            )
+            return img_b64  # fallback
+    except Exception as e:
+        logger.error(
+            f"[nai] vibe 编码异常 ({idx+1}/{total}): {e}"
+        )
+        return img_b64  # fallback
+
+
+async def _do_generate_post(
+    cli: AsyncClient,
+    request_body: dict,
+    token: str = "",
+    start_time: int | None = None,
+) -> bytes:
+    """向 NovelAI /ai/generate-image 发送生图请求并解压 ZIP 响应。
+
+    这是 generate_image 中最核心的一步 —— 将组装好的请求体 POST 到官方 API，
+    解析返回的 ZIP 包提取首张图片。任何非 2xx 响应或 ZIP 损坏均抛出 GenerateError。
+
+    Returns:
+        解压后的 PNG 图片字节数据。
+    Raises:
+        GenerateError: API 返回非 2xx 状态码，或 ZIP 解析失败。
+    """
+
     # 记录请求日志（隐藏敏感信息）
     sanitized_body = _sanitize_for_log(request_body)
     logger.info(
         f"[nai] 发送请求: {json.dumps(sanitized_body, ensure_ascii=False, indent=2)}"
     )
-    
+
     # 发送请求
     headers = {"Authorization": f"Bearer {token}"} if token else None
     response = await cli.post("/ai/generate-image", json=request_body, headers=headers)
@@ -477,10 +547,10 @@ async def generate_image(
             f"[nai] {start_time} -> {response.status_code}: "
             f"{response.headers.get('content-type', '') or 'unknown'}"
         )
-    
+
     # 处理错误响应
     if response.status_code != 200 and response.status_code != 201:
-        error_msg = f"API请求失败"
+        error_msg = "API请求失败"
         try:
             error_data = response.json()
             if "message" in error_data:
@@ -489,10 +559,10 @@ async def generate_image(
                 error_msg = error_data["error"]
         except Exception:
             error_msg = response.text[:500] if response.text else f"HTTP {response.status_code}"
-        
+
         logger.error(f"[nai] 官方API返回错误: status={response.status_code}, body={response.text[:500]}")
         raise GenerateError(error_msg, response.status_code, response.text)
-    
+
     # 官方 API 返回 ZIP 文件，需要解压获取图片
     try:
         def _extract_image_from_zip(payload: bytes) -> bytes:
@@ -510,12 +580,161 @@ async def generate_image(
         raise GenerateError("返回的数据不是有效的 ZIP 文件") from e
 
 
+async def generate_image(
+    cli: AsyncClient,
+    req: Req,
+    opus_free_mode: bool = False,
+    start_time: int | None = None,
+    token: str = "",
+    *,
+    vibe_cache: "VibeCacheManager | None" = None,
+) -> bytes:
+    """
+    调用官方 NovelAI API 生成图片
+    
+    Args:
+        cli: HTTP 客户端
+        req: 请求对象
+        opus_free_mode: 是否开启 Opus 免费模式
+    
+    Returns:
+        生成的图片字节数据
+    """
+    # 转换请求格式
+    request_body = _convert_req_to_official_format(req, opus_free_mode=opus_free_mode)
+    
+    # Vibe Transfer: v4+ 模型需要先通过 /ai/encode-vibe 编码参考图
+    # track: (index, img_b64, info_extract, cache_key) for entries that came from cache
+    cached_vibe_entries: list[tuple[int, str, float, str]] = []
+    
+    if request_body["parameters"].get("reference_image_multiple"):
+        if vibe_cache is not None:
+            vibe_cache._load()  # ensure cache is loaded
+        model = request_body.get("model", "")
+        vibe_images = request_body["parameters"]["reference_image_multiple"]
+        vibe_info_extracts = request_body["parameters"].get(
+            "reference_information_extracted_multiple", []
+        )
+        encoded_vibes = []
+        
+        for i, img_b64 in enumerate(vibe_images):
+            info_extract = vibe_info_extracts[i] if i < len(vibe_info_extracts) else 0.8
+            cache_key = VibeCacheManager.make_key(img_b64, info_extract)
+            
+            # 检查缓存
+            if vibe_cache is not None and (cached := vibe_cache.get(cache_key)) is not None:
+                encoded_vibes.append(cached)
+                cached_vibe_entries.append((i, img_b64, info_extract, cache_key))
+                logger.info(
+                    f"[nai] vibe 编码缓存命中 ({i+1}/{len(vibe_images)}, "
+                    f"info_extract={info_extract})"
+                )
+                continue
+            
+            # 缓存未命中 → 调 encode-vibe
+            encoded = await _encode_single_vibe(cli, i, len(vibe_images), img_b64, info_extract, model, token)
+            encoded_vibes.append(encoded)
+            if vibe_cache is not None and encoded != img_b64:
+                vibe_cache.put(cache_key, encoded)
+        
+        request_body["parameters"]["reference_image_multiple"] = encoded_vibes
+    
+    # ── POST /ai/generate-image（带缓存失效重试）─────────────────────
+    # NovelAI 的 vibe 编码向量会在服务端缓存一段时间，但官方未公开 TTL。
+    # 如果缓存中的向量已过期，生图 API 会返回错误。
+    #
+    # 策略：最多尝试 2 次。首次失败时，若命中了本地缓存，
+    # 则清除这些缓存条目并重新调 encode-vibe 获取新鲜向量，再 POST 一次。
+    # 若第二次仍失败（或首次就没用到缓存），直接向上抛异常。
+    # ────────────────────────────────────────────────────────────────
+    max_attempts = 2
+    for attempt in range(max_attempts):
+        try:
+            return await _do_generate_post(cli, request_body, token, start_time)
+        except GenerateError as e:
+            can_retry = (
+                attempt == 0
+                and len(cached_vibe_entries) > 0
+                and vibe_cache is not None
+            )
+            if not can_retry:
+                raise
+            
+            logger.warning(
+                f"[nai] 生图失败 (status={e.status_code}), "
+                f"正在清除 {len(cached_vibe_entries)} 条 vibe 缓存并重新编码..."
+            )
+            
+            # 逐条清除过期缓存并重新编码
+            model = request_body.get("model", "")
+            vibe_images = request_body["parameters"]["reference_image_multiple"]
+            vibe_info_extracts = request_body["parameters"].get(
+                "reference_information_extracted_multiple", []
+            )
+            
+            for idx, img_b64, info_extract, cache_key in cached_vibe_entries:
+                vibe_cache.remove(cache_key)
+                encoded = await _encode_single_vibe(cli, idx, len(vibe_images), img_b64, info_extract, model, token)
+                vibe_images[idx] = encoded
+                if encoded != img_b64:
+                    vibe_cache.put(cache_key, encoded)
+                    logger.info(
+                        f"[nai] vibe 缓存已清除并重新编码 ({idx+1}/{len(vibe_images)})"
+                    )
+            
+            request_body["parameters"]["reference_image_multiple"] = vibe_images
+            cached_vibe_entries = []  # 清空追踪列表，避免第二次失败时重复清理
+            logger.info("[nai] 使用重新编码的 vibe 数据重试生图...")
+            
+        except Exception as e:
+            # 非 GenerateError 的异常（如网络超时、连接重置）也适用同样的重试逻辑
+            can_retry = (
+                attempt == 0
+                and len(cached_vibe_entries) > 0
+                and vibe_cache is not None
+            )
+            if not can_retry:
+                raise
+            
+            logger.warning(
+                f"[nai] 生图异常 ({type(e).__name__}: {e}), "
+                f"正在清除 {len(cached_vibe_entries)} 条 vibe 缓存并重新编码..."
+            )
+            
+            model = request_body.get("model", "")
+            vibe_images = request_body["parameters"]["reference_image_multiple"]
+            vibe_info_extracts = request_body["parameters"].get(
+                "reference_information_extracted_multiple", []
+            )
+            
+            for idx, img_b64, info_extract, cache_key in cached_vibe_entries:
+                try:
+                    vibe_cache.remove(cache_key)
+                except Exception:
+                    pass
+                encoded = await _encode_single_vibe(cli, idx, len(vibe_images), img_b64, info_extract, model, token)
+                vibe_images[idx] = encoded
+                try:
+                    if encoded != img_b64:
+                        vibe_cache.put(cache_key, encoded)
+                except Exception:
+                    pass
+            
+            request_body["parameters"]["reference_image_multiple"] = vibe_images
+            cached_vibe_entries = []
+            logger.info("[nai] 使用重新编码的 vibe 数据重试生图...")
+    
+    # 不应到达这里，但保留作为兜底
+    raise GenerateError("重试次数已耗尽")
+
+
 async def wrapped_generate(
     req: Req,
     config: Config,
     token: str = "",
     *,
     client_getter: Callable[[], Awaitable[AsyncClient]] | None = None,
+    vibe_cache: "VibeCacheManager | None" = None,
 ) -> bytes:
     """生成图片
     
@@ -548,6 +767,7 @@ async def wrapped_generate(
             opus_free_mode=opus_free_mode,
             start_time=start_time,
             token=token,
+            vibe_cache=vibe_cache,
         )
     finally:
         if close_after:

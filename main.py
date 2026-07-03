@@ -68,7 +68,7 @@ def _load_src_module(module_basename: str):
     return module
 
 from .src.config import Config
-from .src.data_source import GenerateError, create_client_from_config, wrapped_generate
+from .src.data_source import GenerateError, VibeCacheManager, create_client_from_config, wrapped_generate
 from .src.llm import (
     ConfigNeededTool,
     ReturnToLLMError,
@@ -468,6 +468,7 @@ class STNaiGenerateImageTool(ConfigNeededTool):
                 vibe_transfer_images,
                 vision_images=vision_images,
                 client_getter=self.client_getter,
+                vibe_cache=self.vibe_cache_manager,
             )
         except ReturnToLLMError as e:
             logger.debug(f"{e}")
@@ -530,6 +531,7 @@ class Plugin(Star):
         self.cs_store = CharacterKeepStore(cs_dir, cssaying_path)
 
         self._auto_draw_store = AutoDrawStoreManager(data_dir)
+        self.vibe_cache_manager = VibeCacheManager(data_dir, ttl_days=config.general.vibe_cache_ttl_days)
         
         # 自动画图状态（按会话存储）
         # key: unified_msg_origin
@@ -567,6 +569,14 @@ class Plugin(Star):
                 logger.info(f"[nai] 已清理旧帮助缓存图片 {removed} 个")
         except Exception:  # noqa: BLE001
             logger.debug("[nai] Legacy help cache cleanup skipped")
+
+        # 清理过期的 vibe 编码缓存（TTL 到期自动删除）
+        try:
+            expired = await asyncio.to_thread(self.vibe_cache_manager.cleanup_expired)
+            if expired:
+                logger.info(f"[nai] vibe 缓存 TTL 清理: {expired} 条过期条目已删除")
+        except Exception:  # noqa: BLE001
+            logger.debug("[nai] vibe 缓存 TTL 清理跳过")
 
         # 避免在事件循环中做同步文件 I/O
         self._usage_md_cache = await asyncio.to_thread(load_usage_md)
@@ -1138,6 +1148,17 @@ class Plugin(Star):
         """删除预设（管理员）"""
         async for result in handle_preset_delete(self, event):
             yield result
+
+    @event_filter.command("nai vibe重置")
+    async def cmd_vibe_reset(self, event: AstrMessageEvent):
+        """清空 Vibe 编码缓存（管理员）"""
+        if not self._check_permission(event):
+            yield event.plain_result("权限不足，仅管理员可使用此命令")
+            return
+        cache = self.vibe_cache_manager._load()
+        count_before = len(cache)
+        self.vibe_cache_manager.reset()
+        yield event.plain_result(f"✅ Vibe 编码缓存已清空（已删除 {count_before} 条缓存记录）")
 
     # ========== 角色保持命令 ==========
 

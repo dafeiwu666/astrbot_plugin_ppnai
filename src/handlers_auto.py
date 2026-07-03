@@ -2,8 +2,7 @@
 
 import asyncio
 import io
-import os
-import time
+from datetime import datetime
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -38,7 +37,12 @@ ORIGINALS_DIR = _ORIGINALS_DIR
 JPEG_QUALITY = 85
 
 
-def _save_original_and_compress(img_bytes: bytes, max_bytes: int, save_original: bool = True) -> bytes:
+def _save_original_and_compress(
+    img_bytes: bytes,
+    max_bytes: int,
+    save_original: bool = True,
+    enable_compression: bool = True,
+) -> bytes:
     """Save original image to disk and return a platform-safe compressed version.
 
     Args:
@@ -54,13 +58,18 @@ def _save_original_and_compress(img_bytes: bytes, max_bytes: int, save_original:
     # Save original (if enabled)
     if save_original:
         ORIGINALS_DIR.mkdir(parents=True, exist_ok=True)
-        ts = time.strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         is_png = img_bytes[:4] == b'\x89PNG'
         ext = ".png" if is_png else ".jpg"
         filename = f"{ts}_{original_len}{ext}"
         filepath = ORIGINALS_DIR / filename
         filepath.write_bytes(img_bytes)
         logger.info(f"[auto_draw] 原图已保存: {filepath} ({original_len:,} bytes)")
+
+    # If compression is disabled, return as-is
+    if not enable_compression:
+        logger.info(f"[auto_draw] 压缩已禁用, 原样发送 ({original_len:,} bytes)")
+        return img_bytes
 
     # If already under limit, return as-is
     if original_len <= max_bytes:
@@ -496,6 +505,7 @@ async def _auto_draw_generate(
                                 plugin.config,
                                 token=token,
                                 client_getter=plugin.get_http_client,
+                                vibe_cache=plugin.vibe_cache_manager,
                             )
 
                         images.append(await plugin._run_with_retry(_do_generate))
@@ -506,6 +516,7 @@ async def _auto_draw_generate(
                         img,
                         max_bytes=plugin.config.general.auto_draw_compress_threshold_mb * 1024 * 1024,
                         save_original=plugin.config.general.auto_draw_save_original,
+                        enable_compression=plugin.config.general.auto_draw_enable_compression,
                     )
                     for img in images
                 ]

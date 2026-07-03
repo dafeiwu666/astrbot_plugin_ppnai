@@ -63,6 +63,26 @@ class GeneralConfig(BaseModel):
             },
         ),
     ] = 9
+    auto_draw_enable_compression: Annotated[
+        bool,
+        Field(
+            description="自动画图时对超大图片进行PIL压缩",
+            json_schema_extra={
+                "hint": "关闭后即使图片超过压缩阈值也不会降质压缩，将以原格式发送。注意过大图片可能被平台（如Telegram）拒收。",
+            },
+        ),
+    ] = True
+    vibe_cache_ttl_days: Annotated[
+        int,
+        Field(
+            description="Vibe编码缓存有效期（天）",
+            ge=1,
+            le=90,
+            json_schema_extra={
+                "hint": "超过此天数的缓存条目将被视为过期，下次使用时自动重新编码。默认7天。",
+            },
+        ),
+    ] = 7
 
 
 class RequestConfig(BaseModel):
