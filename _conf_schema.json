@@ -7,7 +7,8 @@
       "merge_draw_to_chat_record": true,
       "auto_draw_save_original": false,
       "auto_draw_compress_threshold_mb": 9,
-      "auto_draw_enable_compression": true
+      "auto_draw_enable_compression": true,
+      "vibe_cache_ttl_days": 7
     },
     "description": "通用设置",
     "items": {
