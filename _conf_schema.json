@@ -46,6 +46,15 @@
         "hint": "关闭后原图不压缩直接发送（可能产生超大文件）。阈值由 auto_draw_compress_threshold_mb 控制。",
         "title": "Auto Draw Enable Compression",
         "type": "bool"
+      },
+      "vibe_cache_ttl_days": {
+        "default": 7,
+        "description": "Vibe编码缓存有效期（天）",
+        "hint": "超过此天数的缓存条目将被视为过期，下次使用时自动重新编码。范围 1~90 天。",
+        "title": "Vibe Cache TTL Days",
+        "type": "int",
+        "maximum": 90,
+        "minimum": 1
       }
     }
   },
