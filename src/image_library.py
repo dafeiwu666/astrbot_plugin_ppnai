@@ -55,7 +55,20 @@ class ImageLibraryManager:
     def exists(self, name: str) -> bool:
         return self.validate_name(name) in self._load()
 
-    def add(self, name: str, data_uri: str, *, overwrite: bool = False) -> None:
+    def owner(self, name: str) -> str:
+        entry = self._load().get(self.validate_name(name))
+        if entry is None:
+            raise FileNotFoundError(f"图库图片不存在: {name}")
+        return entry.get("owner_id", "system")
+
+    def add(
+        self,
+        name: str,
+        data_uri: str,
+        *,
+        overwrite: bool = False,
+        owner_id: str = "system",
+    ) -> None:
         name = self.validate_name(name)
         index = self._load()
         if name in index and not overwrite:
@@ -72,7 +85,11 @@ class ImageLibraryManager:
             old_path = self.image_dir / old_entry["file"]
             if old_path.exists():
                 old_path.unlink()
-        index[name] = {"file": filename, "mime": mime or "image/jpeg"}
+        index[name] = {
+            "file": filename,
+            "mime": mime or "image/jpeg",
+            "owner_id": owner_id if old_entry is None else old_entry.get("owner_id", "system"),
+        }
         self._save()
 
     def delete(self, name: str) -> bool:
@@ -88,6 +105,15 @@ class ImageLibraryManager:
 
     def list_names(self) -> list[str]:
         return sorted(self._load())
+
+    def list_grouped(self, owner_id: str | None = None) -> dict[str, list[str]]:
+        grouped: dict[str, list[str]] = {}
+        for name, entry in self._load().items():
+            owner = entry.get("owner_id", "system")
+            if owner_id is not None and owner != owner_id:
+                continue
+            grouped.setdefault(owner, []).append(name)
+        return {key: sorted(value) for key, value in sorted(grouped.items())}
 
     def read_data_uri(self, name: str) -> str:
         entry = self._load().get(self.validate_name(name))

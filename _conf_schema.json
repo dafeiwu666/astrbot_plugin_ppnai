@@ -6,7 +6,8 @@
       "help_t2i": true,
       "merge_draw_to_chat_record": true,
       "send_generation_details": false,
-      "image_library_admins": []
+      "resource_admins": [],
+      "list_all_resources": false
     },
     "description": "通用设置",
     "items": {
@@ -30,15 +31,22 @@
         "title": "Send Generation Details",
         "type": "bool"
       },
-      "image_library_admins": {
+      "resource_admins": {
         "default": [],
-        "description": "额外图库管理员用户 ID",
-        "hint": "默认只有 bot 管理员；填写用户 ID 后允许这些用户管理图库图片。",
-        "title": "Image Library Admins",
+        "description": "额外资源管理员用户 ID",
+        "hint": "默认只有 bot 管理员；填写用户 ID 后允许这些用户管理预设、图库和角色保持。",
+        "title": "Resource Admins",
         "type": "list",
         "items": {
           "type": "string"
         }
+      },
+      "list_all_resources": {
+        "default": false,
+        "description": "允许普通用户查看全部资源",
+        "hint": "开启后普通用户的预设、图库和角色保持列表会展示所有用户资源，并按平台和用户 ID 分组。",
+        "title": "List All Resources",
+        "type": "bool"
       }
     }
   },
