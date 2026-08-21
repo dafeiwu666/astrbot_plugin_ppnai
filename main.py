@@ -367,7 +367,7 @@ class STNaiGenerateImageArgs(BaseModel):
     ] = None
 
 
-@dataclass
+@dataclass(config=ConfigDict(arbitrary_types_allowed=True))
 class STNaiGenerateImageTool(ConfigNeededTool):
     name: str = "stnai_generate_image"
     description: str = (

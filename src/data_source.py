@@ -362,6 +362,18 @@ def _convert_req_to_official_format(req: Req, opus_free_mode: bool = False) -> d
     
     # 确定 action 类型和处理高级功能
     action = "generate"
+
+    # NovelAI 服务端不允许在同一次请求中同时使用 Vibe Transfer 和
+    # Character Reference（Director Reference）。两者都属于参考图输入，
+    # 混用会直接返回 400，而不是生成结果。
+    if req.addition.vibe_transfer_list and (
+        req.addition.character_keep and req.addition.character_keep.base64
+    ):
+        raise GenerateError(
+            "Vibe Transfer（v_t）与角色保持（character_keep）不能同时使用；"
+            "请保留其中一种图片参数",
+            status_code=400,
+        )
     
     # 处理图生图 (img2img)
     if req.addition.image_to_image_base64:

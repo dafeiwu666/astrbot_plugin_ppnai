@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from astrbot.api.message_components import Image
 
-from .image_io import resolve_image
+from .image_io import aconvert_to_jpeg_for_character_keep, resolve_image, resolve_image_as_jpeg
 
 FALSE_VALUES = {"false", "0", "off", "关", "否", "no"}
 I2I_KEYS = {"i2i", "图生图"}
@@ -98,8 +98,22 @@ async def resolve_image_params(
         elif key in CHARACTER_KEEP_KEYS:
             if result.character_keep_image:
                 raise ValueError("Param `character_keep` already set")
-            # 使用相同的 resolve_image() 处理，与氛围转移保持一致
-            result.character_keep_image = await resolve_reference(value, key) or None
+            normalized = value.strip().lower()
+            if normalized in FALSE_VALUES:
+                continue
+            if normalized in {"true", "1", "on", "yes", "是"}:
+                # Character Reference requires the API's allowed size and JPEG format.
+                result.character_keep_image = await resolve_image_as_jpeg(
+                    pop_image(key)
+                )
+            else:
+                # Apply the same resize/padding/JPEG conversion to named library images.
+                library_data_uri = await resolve_reference(value, key)
+                result.character_keep_image = (
+                    await aconvert_to_jpeg_for_character_keep(library_data_uri)
+                    if library_data_uri
+                    else None
+                )
 
     result.vision_images = image_queue
     return result
