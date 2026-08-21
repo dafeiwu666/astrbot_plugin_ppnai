@@ -20,6 +20,8 @@ class ImageLibraryManager:
         name = name.strip()
         if not name or len(name) > 80:
             raise ValueError("图库名称不能为空且不能超过 80 个字符")
+        if name.lower() == "true":
+            raise ValueError("图库名称不能为 true")
         if any(ch in name for ch in "\\/:*?\"<>|"):
             raise ValueError("图库名称包含非法字符")
         return name
