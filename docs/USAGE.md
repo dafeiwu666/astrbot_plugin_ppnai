@@ -337,7 +337,8 @@ character_keep=true
 - `nai-diffusion-4-curated-preview` `nai4_c_p` - NAI4 精选预览版
 - `nai-diffusion-4-5-curated` `nai4.5_c` - NAI4.5 精选版
 - `nai-diffusion-4-5-full` `nai4.5_full` - NAI4.5 完整版
-- `nai-diffusion-5` `nai5` - NAI5 标准模型
+- `nai-diffusion-5-full` `nai5_full` - NAI5 完整版
+- `nai-diffusion-5-curated` `nai5_c` - NAI5 精选版
 
 ---
 
