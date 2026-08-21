@@ -11,7 +11,7 @@ from .data_source import GenerateError, wrapped_generate
 from .image_params import iter_key_values, resolve_image_params
 from .llm import ReturnToLLMError, llm_generate_advanced_req
 from .llm_utils import format_readable_error
-from .generation_report import format_generation_report
+from .generation_report import format_generation_report, get_input_image_bytes
 from .params import _collect_images_with_replies, parse_req
 from .handlers_shared import (
     apply_explicit_overrides,
@@ -276,22 +276,21 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
                     yield event.chain_result([nodes])
                 else:
                     yield event.chain_result([Image.fromBytes(img) for img in images])
-                if (
-                    plugin.config.general.send_generation_details
-                    and resource_keys
-                    and last_req is not None
-                ):
+                if plugin.config.general.send_generation_details and last_req is not None:
                     report = format_generation_report(
-                        raw_input, last_req, resource_keys
+                        raw_input, last_req
+                    )
+                    report_content = [Plain(report)]
+                    report_content.extend(
+                        Image.fromBytes(image)
+                        for image in get_input_image_bytes(last_req)
                     )
                     yield event.chain_result([
                         Nodes([
                             Node(
                                 uin=sender_id,
                                 name=sender_name,
-                                content=[Plain(report), Image.fromBytes(images[0])]
-                                if images
-                                else [Plain(report)],
+                                content=report_content,
                             )
                         ])
                     ])
@@ -449,20 +448,22 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
                     yield event.chain_result([nodes])
                 else:
                     yield event.chain_result([Image.fromBytes(img) for img in images])
-                if plugin.config.general.send_generation_details and resource_keys:
+                if plugin.config.general.send_generation_details:
                     report = format_generation_report(
                         event.message_str.removeprefix("nai").strip(),
                         req,
-                        resource_keys,
+                    )
+                    report_content = [Plain(report)]
+                    report_content.extend(
+                        Image.fromBytes(image)
+                        for image in get_input_image_bytes(req)
                     )
                     yield event.chain_result([
                         Nodes([
                             Node(
                                 uin=sender_id,
                                 name=sender_name,
-                                content=[Plain(report), Image.fromBytes(images[0])]
-                                if images
-                                else [Plain(report)],
+                                content=report_content,
                             )
                         ])
                     ])

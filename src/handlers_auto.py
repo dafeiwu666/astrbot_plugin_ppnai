@@ -11,7 +11,7 @@ from .data_source import wrapped_generate
 from .image_io import resolve_image
 from .llm import llm_generate_advanced_req
 from .llm_utils import format_readable_error
-from .generation_report import format_generation_report
+from .generation_report import format_generation_report, get_input_image_bytes
 from .models import ReqAdditionCharacterKeep
 from .params import _collect_images_with_replies, parse_req_with_remaining_images
 from .image_params import iter_key_values, resolve_image_params
@@ -461,22 +461,21 @@ async def _auto_draw_generate(
                 else:
                     await event.send(event.chain_result([Image.fromBytes(img) for img in images]))
 
-                if (
-                    plugin.config.general.send_generation_details
-                    and resource_keys
-                    and last_req is not None
-                ):
+                if plugin.config.general.send_generation_details and last_req is not None:
                     report = format_generation_report(
-                        f"自动画图：{ai_response}", last_req, resource_keys
+                        f"自动画图：{ai_response}", last_req
+                    )
+                    report_content = [Plain(report)]
+                    report_content.extend(
+                        Image.fromBytes(image)
+                        for image in get_input_image_bytes(last_req)
                     )
                     await event.send(event.chain_result([
                         Nodes([
                             Node(
                                 uin=sender_id,
                                 name=sender_name,
-                                content=[Plain(report), Image.fromBytes(images[0])]
-                                if images
-                                else [Plain(report)],
+                                content=report_content,
                             )
                         ])
                     ]))

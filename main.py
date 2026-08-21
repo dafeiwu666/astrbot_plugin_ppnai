@@ -1260,10 +1260,18 @@ class Plugin(Star):
         preview = await asyncio.to_thread(
             self.preview_manager.read, f"image:{name}"
         )
-        contents = [Image.fromBytes(image_bytes)]
+        contents = [Plain(f"🖼️ 图库图片 #{name}\n原图："), Image.fromBytes(image_bytes)]
         if preview is not None:
-            contents.append(Image.fromBytes(preview))
-        yield event.chain_result(contents)
+            contents.extend([Plain("\n预览图："), Image.fromBytes(preview)])
+        yield event.chain_result([
+            Nodes([
+                Node(
+                    uin=event.get_sender_id(),
+                    name=event.get_sender_name(),
+                    content=contents,
+                )
+            ])
+        ])
 
     @event_filter.command("nai图片删除")
     async def cmd_image_library_delete(self, event: AstrMessageEvent):

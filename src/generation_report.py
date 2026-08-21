@@ -1,9 +1,12 @@
 """Formatting for optional post-generation parameter records."""
 
+import base64
+import binascii
+
 from .models import Req
 
 
-def format_generation_report(raw_input: str, req: Req, resource_keys: list[str]) -> str:
+def format_generation_report(raw_input: str, req: Req) -> str:
     params = [
         f"model={req.model}",
         f"artist={req.artist or '(none)'}",
@@ -33,13 +36,46 @@ def format_generation_report(raw_input: str, req: Req, resource_keys: list[str])
             f"character_keep_vibe={req.addition.character_keep.keep_vibe}, "
             f"strength={req.addition.character_keep.strength}"
         )
-    resources = ", ".join(resource_keys) if resource_keys else "(none)"
     return (
-        "预设生成结果\n"
+        "画图参数记录\n"
         f"原始输入：\n{raw_input or '(empty)'}\n\n"
         f"最终正向：\n{req.tag}\n\n"
         f"最终负向：\n{req.negative}\n\n"
         "最终参数：\n"
         + "\n".join(params)
-        + f"\n\n关联资源：{resources}"
+        + (
+            "\n\n输入图片：见下方"
+            if (
+                req.addition.image_to_image_base64
+                or req.addition.vibe_transfer_list
+                or (
+                    req.addition.character_keep
+                    and req.addition.character_keep.base64
+                )
+            )
+            else ""
+        )
     )
+
+
+def get_input_image_bytes(req: Req) -> list[bytes]:
+    """Return the source images used by the request for the detail record."""
+    data_uris: list[str] = []
+    if req.addition.image_to_image_base64:
+        data_uris.append(req.addition.image_to_image_base64)
+    data_uris.extend(
+        item.base64
+        for item in req.addition.vibe_transfer_list
+        if item.base64
+    )
+    if req.addition.character_keep and req.addition.character_keep.base64:
+        data_uris.append(req.addition.character_keep.base64)
+
+    images: list[bytes] = []
+    for data_uri in data_uris:
+        encoded = data_uri.split(",", 1)[1] if "," in data_uri else data_uri
+        try:
+            images.append(base64.b64decode(encoded, validate=True))
+        except (ValueError, binascii.Error):
+            continue
+    return images

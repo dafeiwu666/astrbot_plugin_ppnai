@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 
+from astrbot.api.message_components import Image, Node, Nodes, Plain
+
 
 async def handle_preset_list(plugin, event) -> AsyncIterator:
     owner_id = plugin._get_resource_owner(event)
@@ -39,7 +41,21 @@ async def handle_preset_view(plugin, event) -> AsyncIterator:
         yield event.plain_result(f"预设 #{title} 不存在")
         return
 
-    yield event.plain_result(f"📝 预设 #{title}\n\n```\n{preset.content}\n```")
+    preview = await asyncio.to_thread(
+        plugin.preview_manager.read, f"preset:{title}"
+    )
+    content = [Plain(f"📝 预设 #{title}\n\n{preset.content}")]
+    if preview is not None:
+        content.append(Image.fromBytes(preview))
+    yield event.chain_result([
+        Nodes([
+            Node(
+                uin=event.get_sender_id(),
+                name=event.get_sender_name(),
+                content=content,
+            )
+        ])
+    ])
 
 
 async def handle_preset_add(plugin, event) -> AsyncIterator:

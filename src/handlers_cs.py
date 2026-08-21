@@ -6,9 +6,10 @@ import asyncio
 from collections.abc import AsyncIterator
 
 from astrbot.api import logger
+from astrbot.api.message_components import Image, Node, Nodes, Plain
 from astrbot.core.agent.message import Message
 
-from .character_keep_store import extract_nai_tag, replace_nai_tag
+from .character_keep_store import replace_nai_tag
 
 
 def _split_lines_preserve(value: str) -> list[str]:
@@ -166,12 +167,21 @@ async def handle_scs(plugin, event) -> AsyncIterator:
         return
 
     content = await asyncio.to_thread(plugin.cs_store.read, target_user, name)
-    tag = extract_nai_tag(content)
-    if not tag:
-        yield event.plain_result("未找到 NovelAI tag style 外貌提示词内容")
-        return
-
-    yield event.plain_result(tag)
+    preview = await asyncio.to_thread(
+        plugin.preview_manager.read, f"ck:{target_user}:{name}"
+    )
+    node_content = [Plain(f"📝 角色保持 #{name}\n\n{content}")]
+    if preview is not None:
+        node_content.append(Image.fromBytes(preview))
+    yield event.chain_result([
+        Nodes([
+            Node(
+                uin=event.get_sender_id(),
+                name=event.get_sender_name(),
+                content=node_content,
+            )
+        ])
+    ])
 
 
 async def handle_ccs(plugin, event) -> AsyncIterator:

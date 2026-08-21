@@ -29,8 +29,8 @@
       },
       "send_generation_details": {
         "default": false,
-        "description": "使用预设生成后发送完整参数记录",
-        "hint": "默认关闭。开启后发送原始指令、最终正负向提示词、参数和预览图。",
+        "description": "发送完整参数记录",
+        "hint": "默认关闭。开启后每次生成完成都会发送原始指令、最终正负向提示词和完整参数；若使用输入图片，会一并发送输入图片。",
         "title": "Send Generation Details",
         "type": "bool"
       },

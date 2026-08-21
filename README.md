@@ -49,7 +49,7 @@
 | 配置项 | 说明 | 必填 |
 | :--- | :--- | :--- |
 | `general.merge_draw_to_chat_record` | 是否将画图结果合并为聊天记录（关闭后直接发送单张图片）。 | ❌ 否 |
-| `general.send_full_record` | 是否在使用预设生成后，发送完整的参数记录及预览图。 | ❌ 否 |
+| `general.send_generation_details` | 是否在每次生成后发送完整参数记录；若有输入图片会一并发送。 | ❌ 否 |
 | `general.public_resources` | 预设、图库、角色保持(CS) 是否对所有人公开。 | ❌ 否 |
 | `general.allow_view_all` | 是否允许普通用户查看全部资源（用于保护隐私）。 | ❌ 否 |
 | `request.proxy_url` | 画图接口（如 image.novelai.net）的代理地址。非海外机器必填。支持 `http://`、`https://`、`socks5://` 等。 | ❌ 否 |
