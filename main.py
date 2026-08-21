@@ -3,6 +3,7 @@ import os
 import sys
 import types
 import uuid
+import time
 from asyncio import Semaphore
 from importlib import import_module
 from importlib import util as importlib_util
@@ -88,6 +89,7 @@ from .src.image_io import resolve_image
 from .src.user_manager import UserManager
 from .src.preset_manager import PresetManager
 from .src.preview_manager import PreviewManager
+from .src.image_library import ImageLibraryManager, LibraryImage
 from .src.queue_manager import get_shared_queue
 from .src.handlers_nai import handle_cmd_nai, handle_nai_draw
 try:
@@ -542,6 +544,8 @@ class Plugin(Star):
         self._auto_draw_store = AutoDrawStoreManager(data_dir)
         self.vibe_cache_manager = VibeCacheManager(data_dir)
         self.preview_manager = PreviewManager(data_dir)
+        self.image_library = ImageLibraryManager(data_dir)
+        self._pending_image_library: dict[tuple[str, str], dict[str, object]] = {}
         
         # 自动画图状态（按会话存储）
         # key: unified_msg_origin
@@ -765,6 +769,11 @@ class Plugin(Star):
         if isinstance(is_admin, bool):
             return is_admin
         return False
+
+    def _check_image_library_permission(self, event: AstrMessageEvent) -> bool:
+        return self._check_permission(event) or self._get_user_id(event) in set(
+            self.config.general.image_library_admins
+        )
     
     def _get_next_token(self) -> str:
         """轮询获取下一个可用的 Token"""
@@ -1056,7 +1065,28 @@ class Plugin(Star):
         
         final_raw = '\n'.join(final_params)
         
-        req = await parse_req(final_raw, event.message_obj.message, self.config, is_whitelisted)
+        image_params = {"i2i", "i2i_image", "vibe_transfer", "v_t", "character_keep", "c_k", "ck"}
+        source_images = _collect_images_with_replies(event.message_obj.message)
+        parse_images = []
+        source_index = 0
+        for line in final_raw.splitlines():
+            if "=" not in line:
+                continue
+            key, value = (part.strip() for part in line.split("=", 1))
+            if key not in image_params or value.lower() in {"false", "0", "off", "关"}:
+                continue
+            if value.lower() in {"true", "1", "on", "yes", "是"}:
+                if source_index >= len(source_images):
+                    raise ValueError(f"参数 {key} 需要上传图片")
+                parse_images.append(source_images[source_index])
+                source_index += 1
+            else:
+                data_uri = await asyncio.to_thread(
+                    self.image_library.read_data_uri, value
+                )
+                parse_images.append(LibraryImage(data_uri))
+        parse_images.extend(source_images[source_index:])
+        req = await parse_req(final_raw, parse_images, self.config, is_whitelisted)
         return req, batch_count, preset_names, list(cs_entries.values())
 
     # ========== 签到命令 ==========
@@ -1134,6 +1164,124 @@ class Plugin(Star):
         """增加用户额度（管理员）"""
         async for result in handle_add_quota(self, event):
             yield result
+
+    # ========== 图库命令 ==========
+
+    @event_filter.command("nai图片添加")
+    async def cmd_image_library_add(self, event: AstrMessageEvent):
+        if not self._check_image_library_permission(event):
+            yield event.plain_result("权限不足，仅图库管理员可使用此命令")
+            return
+        name = event.message_str.removeprefix("nai图片添加").strip()
+        try:
+            name = self.image_library.validate_name(name)
+        except ValueError as exc:
+            yield event.plain_result(str(exc))
+            return
+        key = (event.unified_msg_origin, self._get_user_id(event))
+        self._pending_image_library[key] = {
+            "name": name,
+            "overwrite": False,
+            "expires_at": time.time() + 60,
+        }
+        yield event.plain_result(f"请在 60 秒内发送一张图片以添加图库：{name}")
+
+    @event_filter.command("nai图片修改")
+    async def cmd_image_library_modify(self, event: AstrMessageEvent):
+        if not self._check_image_library_permission(event):
+            yield event.plain_result("权限不足，仅图库管理员可使用此命令")
+            return
+        name = event.message_str.removeprefix("nai图片修改").strip()
+        try:
+            name = self.image_library.validate_name(name)
+            if not await asyncio.to_thread(self.image_library.exists, name):
+                yield event.plain_result(f"图库图片不存在：{name}")
+                return
+        except ValueError as exc:
+            yield event.plain_result(str(exc))
+            return
+        key = (event.unified_msg_origin, self._get_user_id(event))
+        self._pending_image_library[key] = {
+            "name": name,
+            "overwrite": True,
+            "expires_at": time.time() + 60,
+        }
+        yield event.plain_result(f"请在 60 秒内发送一张图片以修改图库：{name}")
+
+    @event_filter.command("nai图片查看")
+    async def cmd_image_library_view(self, event: AstrMessageEvent):
+        name = event.message_str.removeprefix("nai图片查看").strip()
+        if not name:
+            yield event.plain_result("请指定图库名称")
+            return
+        try:
+            image_bytes, _mime = await asyncio.to_thread(
+                self.image_library.read_bytes, name
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            yield event.plain_result(str(exc))
+            return
+        preview = await asyncio.to_thread(
+            self.preview_manager.read, f"image:{name}"
+        )
+        contents = [Image.fromBytes(image_bytes)]
+        if preview is not None:
+            contents.append(Image.fromBytes(preview))
+        yield event.chain_result(contents)
+
+    @event_filter.command("nai图片删除")
+    async def cmd_image_library_delete(self, event: AstrMessageEvent):
+        if not self._check_image_library_permission(event):
+            yield event.plain_result("权限不足，仅图库管理员可使用此命令")
+            return
+        name = event.message_str.removeprefix("nai图片删除").strip()
+        try:
+            deleted = await asyncio.to_thread(self.image_library.delete, name)
+        except ValueError as exc:
+            yield event.plain_result(str(exc))
+            return
+        yield event.plain_result(
+            f"✅ 已删除图库：{name}" if deleted else f"图库不存在：{name}"
+        )
+
+    @event_filter.command("nai图片列表")
+    async def cmd_image_library_list(self, event: AstrMessageEvent):
+        names = await asyncio.to_thread(self.image_library.list_names)
+        yield event.plain_result(
+            "图库列表：\n" + "\n".join(f"• {name}" for name in names)
+            if names
+            else "图库为空"
+        )
+
+    @event_filter.event_message_type(event_filter.EventMessageType.ALL)
+    async def on_image_library_upload(self, event: AstrMessageEvent):
+        """Consume exactly one follow-up message for a pending library upload."""
+        if event.message_str.startswith(("nai图片添加", "nai图片修改")):
+            return
+        key = (event.unified_msg_origin, self._get_user_id(event))
+        pending = self._pending_image_library.pop(key, None)
+        if pending is None:
+            return
+        if float(pending["expires_at"]) < time.time():
+            yield event.plain_result("图库图片上传已超时，请重新执行添加或修改命令")
+            return
+        images = _collect_images_with_replies(event.message_obj.message)
+        if not images:
+            yield event.plain_result("图库上传已取消：下一条消息不是图片")
+            return
+        try:
+            data_uri = await resolve_image(images[0])
+            await asyncio.to_thread(
+                self.image_library.add,
+                str(pending["name"]),
+                data_uri,
+                overwrite=bool(pending["overwrite"]),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Image library upload failed")
+            yield event.plain_result(f"图库图片保存失败：{format_readable_error(exc)}")
+            return
+        yield event.plain_result(f"✅ 图库图片已保存：{pending['name']}")
 
     # ========== 预设命令 ==========
     

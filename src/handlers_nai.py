@@ -119,6 +119,7 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
         resolved_images = await resolve_image_params(
             [*image_params, *iter_key_values(preset_contents)],
             uploaded_images,
+            plugin.image_library,
         )
     except Exception as e:  # noqa: BLE001
         yield event.plain_result(f"图片参数解析失败：{format_readable_error(e)}")
@@ -178,6 +179,7 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
     resource_keys = [
         *(f"preset:{name}" for name in preset_names),
         *(f"ck:{user_id}:{name}" for name in cs_names),
+        *resolved_images.resource_keys,
     ]
 
     logger.debug(
@@ -360,6 +362,13 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
         *(f"preset:{name}" for name in preset_names),
         *(f"ck:{user_id}:{name}" for name in cs_names),
     ]
+    for line in event.message_str.splitlines():
+        if "=" not in line:
+            continue
+        key, value = (part.strip() for part in line.split("=", 1))
+        if key in {"i2i", "c_k", "ck", "character_keep", "vibe_transfer", "v_t"}:
+            if value.lower() not in {"true", "false", "1", "0", "on", "off", "是", "否", "关"}:
+                resource_keys.append(f"image:{value}")
 
     if quota_enabled and not is_whitelisted:
         can_use, reason = plugin.user_manager.can_use(user_id)

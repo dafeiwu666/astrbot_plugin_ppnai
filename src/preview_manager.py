@@ -70,3 +70,12 @@ class PreviewManager:
             self._save()
         return saved
 
+    def read(self, resource_key: str) -> bytes | None:
+        filename = self._load().get(resource_key)
+        if not filename:
+            return None
+        path = self.image_dir / filename
+        if not path.is_file():
+            logger.warning("[nai] preview file missing for %s: %s", resource_key, path)
+            return None
+        return path.read_bytes()

@@ -52,6 +52,15 @@ class GeneralConfig(BaseModel):
             },
         ),
     ] = False
+    image_library_admins: Annotated[
+        list[str],
+        Field(
+            description="额外图库管理员用户 ID",
+            json_schema_extra={
+                "hint": "默认只有 bot 管理员；填写用户 ID 后允许这些用户添加、修改和删除图库图片。",
+            },
+        ),
+    ] = []
 
 
 class RequestConfig(BaseModel):
