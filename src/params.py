@@ -266,6 +266,7 @@ AVAILABLE_MODEL_NAME_MAP = {
     "nai-diffusion-4-curated-preview": "NAI4 精选预览版",
     "nai-diffusion-4-5-curated": "NAI4.5 精选版",
     "nai-diffusion-4-5-full": "NAI4.5 完整版",
+    "nai-diffusion-5": "NAI5 标准模型",
 }
 # 模型简写到完整名称的映射
 MODEL_ALIAS_MAP = {
@@ -275,6 +276,7 @@ MODEL_ALIAS_MAP = {
     "nai4_c_p": "nai-diffusion-4-curated-preview",
     "nai4.5_c": "nai-diffusion-4-5-curated",
     "nai4.5_full": "nai-diffusion-4-5-full",
+    "nai5": "nai-diffusion-5",
 }
 AVAILABLE_DOTH_NAME_MAP = {
     "0": "不使用",
