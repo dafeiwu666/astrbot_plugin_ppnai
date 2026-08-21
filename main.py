@@ -8,7 +8,7 @@ from importlib import import_module
 from importlib import util as importlib_util
 from io import BytesIO
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from cookit.pyd import model_with_model_config
 from pydantic import BaseModel, ConfigDict, Field
@@ -373,7 +373,9 @@ class STNaiGenerateImageTool(ConfigNeededTool):
         " Use when user wants you to draw an image."
     )
     parameters: dict = Field(default_factory=dict)
-    vibe_cache_init: VibeCacheManager | None = None
+    # Runtime-only dependency. Keep this as Any so Pydantic does not attempt to
+    # generate a public tool schema for the cache manager implementation.
+    vibe_cache_init: Any | None = None
 
     def __post_init__(self):
         super().__post_init__()
