@@ -20,6 +20,8 @@ AVAILABLE_MODELS = [
     "nai-diffusion-4-curated-preview",
     "nai-diffusion-4-5-curated",
     "nai-diffusion-4-5-full",
+    "nai-diffusion-5-full",
+    "nai-diffusion-5-curated",
 ]
 AVAILABLE_SAMPLERS = [
     "k_euler_ancestral",
