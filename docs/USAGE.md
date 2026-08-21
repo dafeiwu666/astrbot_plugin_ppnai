@@ -363,7 +363,8 @@ nai增加额度 用户ID 次数
 
 ### 图生图(i2i)
 ```
-nai 1girl
+nai
+tag=1girl
 i2i=true
 
 [图片]
@@ -371,7 +372,8 @@ i2i=true
 
 ### 氛围转移(vibe_transfer)
 ```
-nai 1girl
+nai
+tag=1girl
 vibe_transfer=true
 vibe_transfer_info_extract=0.8
 
@@ -384,7 +386,8 @@ vibe_transfer_info_extract=0.8
 
 ### 角色保持(character_keep)
 ```
-nai 1girl
+nai
+tag=1girl
 character_keep=true
 
 [图片]

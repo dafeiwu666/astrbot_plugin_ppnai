@@ -345,24 +345,10 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
         help_msg = await plugin.generate_help(event.unified_msg_origin)
         if plugin.config.general.help_t2i:
             try:
-                marker = "## ⚙️ 参数指令表"
-                sections: list[str] = [help_msg]
-                if marker in help_msg:
-                    upper, lower = help_msg.split(marker, 1)
-                    sections = [upper.strip(), f"{marker}\n{lower.strip()}".strip()]
-
-                rendered_any = False
-                for section in sections:
-                    if not section.strip():
-                        continue
-                    pages = await plugin._render_markdown_to_images(section)
-                    if pages:
-                        yield event.chain_result([Image.fromBytes(b) for b in pages])
-                        rendered_any = True
-                    else:
-                        yield event.plain_result(section)
-
-                if not rendered_any:
+                pages = await plugin._render_markdown_to_images(help_msg)
+                if pages:
+                    yield event.chain_result([Image.fromBytes(b) for b in pages])
+                else:
                     yield event.plain_result(help_msg)
             except Exception:
                 logger.exception("帮助图片渲染失败")
