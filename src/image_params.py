@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 
 from astrbot.api.message_components import Image
 
+from .image_io import resolve_image
+
 FALSE_VALUES = {"false", "0", "off", "关", "否", "no"}
 I2I_KEYS = {"i2i", "图生图"}
 VIBE_TRANSFER_KEYS = {"vibe_transfer", "v_t", "氛围转移"}
