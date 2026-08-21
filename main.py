@@ -727,6 +727,19 @@ class Plugin(Star):
         try:
             import pillowmd
 
+            def _split_help_markdown_to_four(text: str) -> list[str]:
+                """Split long help markdown into four logical chunks."""
+                sections = [section.strip() for section in text.split("\n---\n") if section.strip()]
+                if len(sections) < 4:
+                    return [text]
+                groups: list[list[str]] = [[], [], [], []]
+                total = len(sections)
+                for index, section in enumerate(sections):
+                    bucket = min((index * 4) // total, 3)
+                    groups[bucket].append(section)
+                chunks = ["\n\n---\n\n".join(group).strip() for group in groups if group]
+                return chunks if len(chunks) == 4 else [text]
+
             def _load_style():
                 # 样式路径
                 style_path = Path("data/styles/夏日冲浪")
@@ -737,23 +750,40 @@ class Plugin(Star):
 
             # pillowmd 样式加载可能涉及磁盘 I/O，放到线程池避免阻塞事件循环
             style = await asyncio.to_thread(_load_style)
-            
-            # 使用异步接口渲染
-            # autoPage=True 支持长图分页
-            render_result = await style.AioRender(
-                text=markdown_content,
-                useImageUrl=True,
-                autoPage=True
-            )
-            
-            # MdRenderResult 对象包含 images 列表
-            if hasattr(render_result, 'images'):
-                images = render_result.images
-            elif isinstance(render_result, list):
-                images = render_result
+
+            help_chunks = _split_help_markdown_to_four(markdown_content)
+            images = []
+            if len(help_chunks) == 4:
+                # Fixed 4-column style output for /nai help images.
+                for chunk in help_chunks:
+                    render_result = await style.AioRender(
+                        text=chunk,
+                        useImageUrl=True,
+                        autoPage=False,
+                    )
+                    if hasattr(render_result, "images"):
+                        images.extend(render_result.images)
+                    elif isinstance(render_result, list):
+                        images.extend(render_result)
+                    else:
+                        images.append(render_result)
             else:
-                # 回退处理
-                images = [render_result]
+                # 使用异步接口渲染
+                # autoPage=True 支持长图分页
+                render_result = await style.AioRender(
+                    text=markdown_content,
+                    useImageUrl=True,
+                    autoPage=True,
+                )
+
+                # MdRenderResult 对象包含 images 列表
+                if hasattr(render_result, "images"):
+                    images = render_result.images
+                elif isinstance(render_result, list):
+                    images = render_result
+                else:
+                    # 回退处理
+                    images = [render_result]
 
             async def _img_to_png_bytes(img) -> bytes:
                 def _do_save() -> bytes:
