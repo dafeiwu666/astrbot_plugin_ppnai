@@ -735,7 +735,7 @@ async def apply_character_keep(value: str, data: dict[str, Any], images: list[Im
     
     # 获取图片并转换为JPEG格式（角色保持功能要求JPEG格式）
     image = pop_from_images(images)
-    image_b64 = await resolve_image_as_jpeg(image)
+    image_b64 = await resolve_image(image)
     
     # 初始化或更新 character_keep
     if "character_keep" not in data["addition"]:
