@@ -11,6 +11,7 @@ class Preset(BaseModel):
     """单个预设"""
     title: str = Field(description="预设标题")
     content: str = Field(description="预设内容（提示词）")
+    owner_id: str = Field(default="system", description="创建者标识")
 
 
 class PresetStore(BaseModel):
@@ -56,16 +57,28 @@ class PresetManager:
             "utf-8"
         )
     
-    def list_presets(self) -> list[str]:
+    def list_presets(self, owner_id: str | None = None) -> list[str]:
         """获取所有预设标题列表"""
-        return list(self._load().presets.keys())
+        return [
+            title
+            for title, preset in self._load().presets.items()
+            if owner_id is None or preset.owner_id == owner_id
+        ]
+
+    def list_grouped(self, owner_id: str | None = None) -> dict[str, list[str]]:
+        grouped: dict[str, list[str]] = {}
+        for title, preset in self._load().presets.items():
+            if owner_id is not None and preset.owner_id != owner_id:
+                continue
+            grouped.setdefault(preset.owner_id, []).append(title)
+        return {key: sorted(value) for key, value in sorted(grouped.items())}
     
     def get_preset(self, title: str) -> Preset | None:
         """获取指定预设，不存在返回 None"""
         store = self._load()
         return store.presets.get(title)
     
-    def add_preset(self, title: str, content: str) -> bool:
+    def add_preset(self, title: str, content: str, owner_id: str = "system") -> bool:
         """
         添加预设
         返回: True 表示添加成功，False 表示已存在同名预设
@@ -73,7 +86,7 @@ class PresetManager:
         store = self._load()
         if title in store.presets:
             return False
-        store.presets[title] = Preset(title=title, content=content)
+        store.presets[title] = Preset(title=title, content=content, owner_id=owner_id)
         self._save()
         return True
     
@@ -89,13 +102,15 @@ class PresetManager:
         self._save()
         return True
     
-    def delete_preset(self, title: str) -> bool:
+    def delete_preset(self, title: str, owner_id: str | None = None) -> bool:
         """
         删除预设
         返回: True 表示删除成功，False 表示预设不存在
         """
         store = self._load()
         if title not in store.presets:
+            return False
+        if owner_id is not None and store.presets[title].owner_id != owner_id:
             return False
         del store.presets[title]
         self._save()

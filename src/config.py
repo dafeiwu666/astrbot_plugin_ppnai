@@ -55,15 +55,24 @@ class GeneralConfig(BaseModel):
     image_cache_enabled: bool = False
     image_cache_ttl_days: int = 7
     image_cache_max_size_mb: int = 1024
-    image_library_admins: Annotated[
+    resource_admins: Annotated[
         list[str],
         Field(
-            description="额外图库管理员用户 ID",
+            description="额外资源管理员用户 ID",
             json_schema_extra={
-                "hint": "默认只有 bot 管理员；填写用户 ID 后允许这些用户添加、修改和删除图库图片。",
+                "hint": "默认只有 bot 管理员；填写用户 ID 后允许这些用户管理预设、图库和角色保持。",
             },
         ),
     ] = []
+    list_all_resources: Annotated[
+        bool,
+        Field(
+            description="允许普通用户查看全部资源",
+            json_schema_extra={
+                "hint": "开启后普通用户的预设、图库和角色保持列表会展示所有用户资源，并按平台和用户 ID 分组。",
+            },
+        ),
+    ] = False
 
 
 class RequestConfig(BaseModel):
