@@ -68,7 +68,12 @@ def _load_src_module(module_basename: str):
     return module
 
 from .src.config import Config
-from .src.data_source import GenerateError, create_client_from_config, wrapped_generate
+from .src.data_source import (
+    GenerateError,
+    VibeCacheManager,
+    create_client_from_config,
+    wrapped_generate,
+)
 from .src.llm import (
     ConfigNeededTool,
     ReturnToLLMError,
@@ -78,7 +83,7 @@ from .src.llm import (
 from .src.llm_utils import format_readable_error
 from .src.models import Req
 from .src.character_keep_store import CharacterKeepStore, extract_nai_tag
-from .src.params import parse_req
+from .src.params import _collect_images_with_replies, parse_req
 from .src.image_io import resolve_image
 from .src.user_manager import UserManager
 from .src.preset_manager import PresetManager
@@ -367,6 +372,7 @@ class STNaiGenerateImageTool(ConfigNeededTool):
         " Use when user wants you to draw an image."
     )
     parameters: dict = Field(default_factory=dict)
+    vibe_cache_init: VibeCacheManager | None = None
 
     def __post_init__(self):
         super().__post_init__()
@@ -405,7 +411,7 @@ class STNaiGenerateImageTool(ConfigNeededTool):
 
         ctx, event = _unwrap_tool_context(context)
 
-        images = [x for x in event.message_obj.message if isinstance(x, Image)]
+        images = _collect_images_with_replies(event.message_obj.message)
         sem = self._image_fetch_sem
 
         async def _get_image(index: int) -> str:
@@ -468,6 +474,7 @@ class STNaiGenerateImageTool(ConfigNeededTool):
                 vibe_transfer_images,
                 vision_images=vision_images,
                 client_getter=self.client_getter,
+                vibe_cache=self.vibe_cache_init,
             )
         except ReturnToLLMError as e:
             logger.debug(f"{e}")
@@ -530,6 +537,7 @@ class Plugin(Star):
         self.cs_store = CharacterKeepStore(cs_dir, cssaying_path)
 
         self._auto_draw_store = AutoDrawStoreManager(data_dir)
+        self.vibe_cache_manager = VibeCacheManager(data_dir)
         
         # 自动画图状态（按会话存储）
         # key: unified_msg_origin
@@ -552,6 +560,7 @@ class Plugin(Star):
             STNaiGenerateImageTool(
                 config_init=self.config,
                 client_getter_init=self.get_http_client,
+                vibe_cache_init=self.vibe_cache_manager,
             )
         )
 
@@ -567,6 +576,11 @@ class Plugin(Star):
                 logger.info(f"[nai] 已清理旧帮助缓存图片 {removed} 个")
         except Exception:  # noqa: BLE001
             logger.debug("[nai] Legacy help cache cleanup skipped")
+
+        try:
+            await asyncio.to_thread(self.vibe_cache_manager.cleanup_expired)
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to clean up vibe cache")
 
         # 避免在事件循环中做同步文件 I/O
         self._usage_md_cache = await asyncio.to_thread(load_usage_md)

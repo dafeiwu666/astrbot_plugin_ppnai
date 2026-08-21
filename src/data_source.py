@@ -4,13 +4,16 @@ NovelAI 官方 API 数据源模块
 适配官方 NovelAI API (https://image.novelai.net)
 """
 
-import io
 import asyncio
+import base64
+import hashlib
+import io
 import json
 import random
 import time
 import zipfile
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from httpx import AsyncClient, Timeout
@@ -80,6 +83,104 @@ class GenerateError(Exception):
 
     def __str__(self) -> str:
         return f"{self.message} (status={self.status_code})"
+
+
+class VibeCacheManager:
+    """Persistent cache for V4/V4.5 vibe encodings.
+
+    The cache only avoids repeated calls to ``/ai/encode-vibe``. It never
+    bypasses the plugin's image-generation quota accounting.
+    """
+
+    def __init__(self, data_dir: Path, ttl_days: int = 7) -> None:
+        self._data_file = data_dir / "vibe_encode_cache.json"
+        self._data_dir = data_dir
+        self._ttl_days = ttl_days
+        self._cache: dict[str, dict[str, object]] | None = None
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    def _load(self) -> dict[str, dict[str, object]]:
+        if self._cache is not None:
+            return self._cache
+        self._data_dir.mkdir(parents=True, exist_ok=True)
+        if not self._data_file.exists():
+            self._cache = {}
+            return self._cache
+        try:
+            raw = json.loads(self._data_file.read_text("utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError("cache root must be an object")
+            self._cache = {
+                key: value
+                for key, value in raw.items()
+                if isinstance(value, dict)
+                and isinstance(value.get("v"), str)
+                and isinstance(value.get("ts"), (int, float))
+            }
+        except (OSError, ValueError) as exc:
+            logger.warning("[nai] vibe cache load failed; ignoring cache file: %s", exc)
+            self._cache = {}
+        return self._cache
+
+    def _save(self) -> None:
+        if self._cache is None:
+            return
+        try:
+            self._data_dir.mkdir(parents=True, exist_ok=True)
+            self._data_file.write_text(
+                json.dumps(self._cache, ensure_ascii=False), "utf-8"
+            )
+        except OSError as exc:
+            logger.error("[nai] vibe cache save failed: %s", exc)
+
+    def _is_expired(self, entry: dict[str, object]) -> bool:
+        ts = entry.get("ts")
+        return not isinstance(ts, (int, float)) or (
+            time.time() - float(ts) > self._ttl_days * 86400
+        )
+
+    @staticmethod
+    def make_key(image_b64: str, info_extract: float, model: str) -> str:
+        payload = f"{model}\0{info_extract:.6f}\0{image_b64}"
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def get(self, key: str) -> str | None:
+        entry = self._load().get(key)
+        if entry is None:
+            return None
+        if self._is_expired(entry):
+            del self._load()[key]
+            self._save()
+            logger.info("[nai] expired vibe cache entry removed: %s...", key[:16])
+            return None
+        return str(entry["v"])
+
+    def put(self, key: str, value: str) -> None:
+        self._load()[key] = {"v": value, "ts": time.time()}
+        self._save()
+
+    def lock_for(self, key: str) -> asyncio.Lock:
+        return self._locks.setdefault(key, asyncio.Lock())
+
+    def cleanup_expired(self) -> int:
+        cache = self._load()
+        expired = [key for key, value in cache.items() if self._is_expired(value)]
+        for key in expired:
+            del cache[key]
+        if expired:
+            self._save()
+            logger.info("[nai] removed %d expired vibe cache entries", len(expired))
+        return len(expired)
+
+    def reset(self) -> int:
+        count = len(self._load())
+        self._cache = {}
+        try:
+            if self._data_file.exists():
+                self._data_file.unlink()
+        except OSError as exc:
+            logger.error("[nai] vibe cache reset failed: %s", exc)
+        return count
 
 
 def _sanitize_for_log(obj: Any) -> Any:
@@ -256,6 +357,7 @@ def _convert_req_to_official_format(req: Req, opus_free_mode: bool = False) -> d
         "reference_image_multiple": [],
         "reference_information_extracted_multiple": [],
         "reference_strength_multiple": [],
+        "normalize_reference_strength_multiple": True,
     }
     
     # 确定 action 类型和处理高级功能
@@ -346,12 +448,44 @@ def _convert_req_to_official_format(req: Req, opus_free_mode: bool = False) -> d
     return request_body
 
 
+async def _encode_vibe_token(
+    cli: AsyncClient,
+    image_base64: str,
+    information_extracted: float,
+    model: str,
+    token: str = "",
+) -> str:
+    """Encode one V4/V4.5 reference image; failures remain fatal."""
+    response = await cli.post(
+        "/ai/encode-vibe",
+        json={
+            "image": image_base64,
+            "information_extracted": information_extracted,
+            "model": model,
+        },
+        headers={"Authorization": f"Bearer {token}"} if token else None,
+    )
+    if response.status_code != 200:
+        logger.error(
+            "[nai] vibe encoding failed: status=%s body=%s",
+            response.status_code,
+            response.text[:500],
+        )
+        raise GenerateError(
+            "氛围转移参考图编码失败",
+            status_code=response.status_code,
+            response_body=response.text,
+        )
+    return base64.b64encode(response.content).decode("ascii")
+
+
 async def generate_image(
     cli: AsyncClient,
     req: Req,
     opus_free_mode: bool = False,
     start_time: int | None = None,
     token: str = "",
+    vibe_cache: VibeCacheManager | None = None,
 ) -> bytes:
     """
     调用官方 NovelAI API 生成图片
@@ -366,6 +500,41 @@ async def generate_image(
     """
     # 转换请求格式
     request_body = _convert_req_to_official_format(req, opus_free_mode=opus_free_mode)
+
+    parameters = request_body["parameters"]
+    references = parameters.get("reference_image_multiple") or []
+    model = str(request_body.get("model", ""))
+    if references and model.startswith("nai-diffusion-4"):
+        info_extracts = parameters.get(
+            "reference_information_extracted_multiple", []
+        )
+        encoded_references: list[str] = []
+        for index, image_b64 in enumerate(references):
+            info_extract = float(
+                info_extracts[index] if index < len(info_extracts) else 1.0
+            )
+            cache_key = (
+                VibeCacheManager.make_key(image_b64, info_extract, model)
+                if vibe_cache is not None
+                else None
+            )
+            if vibe_cache is None:
+                encoded = await _encode_vibe_token(
+                    cli, image_b64, info_extract, model, token
+                )
+            else:
+                assert cache_key is not None
+                async with vibe_cache.lock_for(cache_key):
+                    encoded = vibe_cache.get(cache_key)
+                    if encoded is None:
+                        encoded = await _encode_vibe_token(
+                            cli, image_b64, info_extract, model, token
+                        )
+                        vibe_cache.put(cache_key, encoded)
+            encoded_references.append(encoded)
+        parameters["reference_image_multiple"] = encoded_references
+        parameters.pop("reference_information_extracted_multiple", None)
+        parameters["add_original_image"] = False
     
     # 记录请求日志（隐藏敏感信息）
     sanitized_body = _sanitize_for_log(request_body)
@@ -420,6 +589,7 @@ async def wrapped_generate(
     token: str = "",
     *,
     client_getter: Callable[[], Awaitable[AsyncClient]] | None = None,
+    vibe_cache: VibeCacheManager | None = None,
 ) -> bytes:
     """生成图片
     
@@ -452,6 +622,7 @@ async def wrapped_generate(
             opus_free_mode=opus_free_mode,
             start_time=start_time,
             token=token,
+            vibe_cache=vibe_cache,
         )
     finally:
         if close_after:

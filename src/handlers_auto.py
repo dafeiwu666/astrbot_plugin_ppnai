@@ -12,7 +12,7 @@ from .image_io import resolve_image
 from .llm import llm_generate_advanced_req
 from .llm_utils import format_readable_error
 from .models import ReqAdditionCharacterKeep
-from .params import _is_image_component, parse_req_with_remaining_images
+from .params import _collect_images_with_replies, parse_req_with_remaining_images
 from .image_params import iter_key_values, resolve_image_params
 from .handlers_shared import (
     apply_explicit_overrides,
@@ -91,9 +91,7 @@ async def _enable_auto_draw(
             if not exists:
                 return False, f"角色保持 {cs_name} 不存在，请先使用 /cs 创建"
 
-    uploaded_images = [
-        x for x in event.message_obj.message if _is_image_component(x)
-    ]
+    uploaded_images = _collect_images_with_replies(event.message_obj.message)
     try:
         resolved_images = await resolve_image_params(
             [*image_params, *iter_key_values(preset_contents)],
@@ -421,6 +419,7 @@ async def _auto_draw_generate(
                                 plugin.config,
                                 token=token,
                                 client_getter=plugin.get_http_client,
+                                vibe_cache=plugin.vibe_cache_manager,
                             )
 
                         images.append(await plugin._run_with_retry(_do_generate))
