@@ -1249,7 +1249,7 @@ class Plugin(Star):
             f"✅ 已删除图库：{name}" if deleted else f"图库不存在：{name}"
         )
 
-    @event_filter.command("nai图片列表")
+    @event_filter.command("nai图库")
     async def cmd_image_library_list(self, event: AstrMessageEvent):
         names = await asyncio.to_thread(self.image_library.list_names)
         yield event.plain_result(
