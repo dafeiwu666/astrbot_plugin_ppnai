@@ -8,7 +8,7 @@ from importlib import import_module
 from importlib import util as importlib_util
 from io import BytesIO
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from cookit.pyd import model_with_model_config
 from pydantic import BaseModel, ConfigDict, Field
@@ -87,6 +87,7 @@ from .src.params import _collect_images_with_replies, parse_req
 from .src.image_io import resolve_image
 from .src.user_manager import UserManager
 from .src.preset_manager import PresetManager
+from .src.preview_manager import PreviewManager
 from .src.queue_manager import get_shared_queue
 from .src.handlers_nai import handle_cmd_nai, handle_nai_draw
 try:
@@ -372,7 +373,9 @@ class STNaiGenerateImageTool(ConfigNeededTool):
         " Use when user wants you to draw an image."
     )
     parameters: dict = Field(default_factory=dict)
-    vibe_cache_init: VibeCacheManager | None = None
+    # Runtime-only dependency. Keep this as Any so Pydantic does not attempt to
+    # generate a public tool schema for the cache manager implementation.
+    vibe_cache_init: Any | None = None
 
     def __post_init__(self):
         super().__post_init__()
@@ -538,6 +541,7 @@ class Plugin(Star):
 
         self._auto_draw_store = AutoDrawStoreManager(data_dir)
         self.vibe_cache_manager = VibeCacheManager(data_dir)
+        self.preview_manager = PreviewManager(data_dir)
         
         # 自动画图状态（按会话存储）
         # key: unified_msg_origin
@@ -847,7 +851,7 @@ class Plugin(Star):
         self,
         event: AstrMessageEvent,
         is_whitelisted: bool = False,
-    ) -> tuple[Req, int] | None:
+    ) -> tuple[Req, int, list[str], list[str]] | None:
         """解析命令参数，支持多预设
         
         预设格式：s1=xxx, s2=xxx, ...
@@ -863,6 +867,7 @@ class Plugin(Star):
         direct_params: list[tuple[str, str]] = []  # 直接参数
         preset_params_list: list[list[tuple[str, str]]] = []  # 按预设编号排序的预设参数
         preset_numbers: list[int] = []  # 预设编号列表
+        preset_names: list[str] = []
         cs_entries: dict[int, str] = {}
         
         import re
@@ -921,6 +926,7 @@ class Plugin(Star):
                             preset_params.append(('tag', pl))
                     
                     preset_numbers.append(preset_num)
+                    preset_names.append(value)
                     preset_params_list.append(preset_params)
                 else:
                     direct_params.append((key, value))
@@ -954,6 +960,7 @@ class Plugin(Star):
                         else:
                             default_preset_params.append(('tag', pl))
                     preset_numbers.append(1)
+                    preset_names.append(default_name)
                     preset_params_list.append(default_preset_params)
 
         # 按预设编号排序（1, 2, 3, ...）
@@ -1050,7 +1057,7 @@ class Plugin(Star):
         final_raw = '\n'.join(final_params)
         
         req = await parse_req(final_raw, event.message_obj.message, self.config, is_whitelisted)
-        return req, batch_count
+        return req, batch_count, preset_names, list(cs_entries.values())
 
     # ========== 签到命令 ==========
     

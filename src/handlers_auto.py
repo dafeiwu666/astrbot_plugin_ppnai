@@ -4,13 +4,14 @@ import asyncio
 from collections.abc import AsyncIterator
 
 from astrbot.api import logger
-from astrbot.api.message_components import Image, Node, Nodes
+from astrbot.api.message_components import Image, Node, Nodes, Plain
 from astrbot.api.provider import LLMResponse
 
 from .data_source import wrapped_generate
 from .image_io import resolve_image
 from .llm import llm_generate_advanced_req
 from .llm_utils import format_readable_error
+from .generation_report import format_generation_report
 from .models import ReqAdditionCharacterKeep
 from .params import _collect_images_with_replies, parse_req_with_remaining_images
 from .image_params import iter_key_values, resolve_image_params
@@ -383,11 +384,16 @@ async def _auto_draw_generate(
 
                 full_parts = list(reversed(preset_contents)) + [ai_response_with_prefix]
                 full_instructions = "\n\n".join(full_parts)
+                resource_keys = [
+                    *(f"preset:{name}" for name in presets),
+                    *(f"ck:{opener_user_id}:{name}" for name in cs_names),
+                ]
 
                 await event.send(event.plain_result(f"🎨 自动画图中...{queue_status}"))
 
                 async with acquire_generation_semaphore(plugin):
                     images: list[bytes] = []
+                    last_req = None
                     for _ in range(batch_count):
                         req = await llm_generate_advanced_req(
                             instructions=f"画一张图\n{full_instructions}",
@@ -423,6 +429,17 @@ async def _auto_draw_generate(
                             )
 
                         images.append(await plugin._run_with_retry(_do_generate))
+                        last_req = req
+
+                if images and resource_keys:
+                    try:
+                        await asyncio.to_thread(
+                            plugin.preview_manager.save_first_if_missing,
+                            resource_keys,
+                            images[0],
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.exception("Failed to save auto-draw preview")
 
                 sender_id = event.get_sender_id()
                 sender_name = event.get_sender_name()
@@ -438,6 +455,26 @@ async def _auto_draw_generate(
                     await event.send(event.chain_result([nodes]))
                 else:
                     await event.send(event.chain_result([Image.fromBytes(img) for img in images]))
+
+                if (
+                    plugin.config.general.send_generation_details
+                    and resource_keys
+                    and last_req is not None
+                ):
+                    report = format_generation_report(
+                        f"自动画图：{ai_response}", last_req, resource_keys
+                    )
+                    await event.send(event.chain_result([
+                        Nodes([
+                            Node(
+                                uin=sender_id,
+                                name=sender_name,
+                                content=[Plain(report), Image.fromBytes(images[0])]
+                                if images
+                                else [Plain(report)],
+                            )
+                        ])
+                    ]))
 
             except asyncio.CancelledError:
                 await plugin._queue.mark_wait_finished(

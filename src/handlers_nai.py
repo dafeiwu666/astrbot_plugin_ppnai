@@ -5,12 +5,13 @@ import random
 from collections.abc import AsyncIterator
 
 from astrbot.api import logger
-from astrbot.api.message_components import Image, Node, Nodes
+from astrbot.api.message_components import Image, Node, Nodes, Plain
 
 from .data_source import GenerateError, wrapped_generate
 from .image_params import iter_key_values, resolve_image_params
 from .llm import ReturnToLLMError, llm_generate_advanced_req
 from .llm_utils import format_readable_error
+from .generation_report import format_generation_report
 from .params import _collect_images_with_replies, parse_req
 from .handlers_shared import (
     apply_explicit_overrides,
@@ -174,6 +175,10 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
     if description:
         full_description_parts.append(description)
     full_description = "\n\n".join(full_description_parts)
+    resource_keys = [
+        *(f"preset:{name}" for name in preset_names),
+        *(f"ck:{user_id}:{name}" for name in cs_names),
+    ]
 
     logger.debug(
         f"[nai画图] presets={preset_names}, description={description[:50] if description else 'None'}"
@@ -209,6 +214,7 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
             try:
                 async with acquire_generation_semaphore(plugin):
                     images: list[bytes] = []
+                    last_req = None
                     for _ in range(batch_count):
                         req = await llm_generate_advanced_req(
                             instructions=f"画一张图\n{full_description}",
@@ -238,6 +244,17 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
                             )
 
                         images.append(await plugin._run_with_retry(_do_generate))
+                        last_req = req
+
+                if images and resource_keys:
+                    try:
+                        await asyncio.to_thread(
+                            plugin.preview_manager.save_first_if_missing,
+                            resource_keys,
+                            images[0],
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.exception("Failed to save generation preview")
 
                 sender_id = event.get_sender_id()
                 sender_name = event.get_sender_name()
@@ -255,6 +272,25 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
                     yield event.chain_result([nodes])
                 else:
                     yield event.chain_result([Image.fromBytes(img) for img in images])
+                if (
+                    plugin.config.general.send_generation_details
+                    and resource_keys
+                    and last_req is not None
+                ):
+                    report = format_generation_report(
+                        raw_input, last_req, resource_keys
+                    )
+                    yield event.chain_result([
+                        Nodes([
+                            Node(
+                                uin=sender_id,
+                                name=sender_name,
+                                content=[Plain(report), Image.fromBytes(images[0])]
+                                if images
+                                else [Plain(report)],
+                            )
+                        ])
+                    ])
             except ReturnToLLMError as e:
                 yield event.plain_result(f"画图失败：{e}")
             except asyncio.CancelledError:
@@ -318,7 +354,12 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
             yield event.plain_result(help_msg)
         return
 
-    req, batch_count = parsed
+    req, batch_count, preset_names, cs_names = parsed
+    user_id = plugin._get_user_id(event)
+    resource_keys = [
+        *(f"preset:{name}" for name in preset_names),
+        *(f"ck:{user_id}:{name}" for name in cs_names),
+    ]
 
     if quota_enabled and not is_whitelisted:
         can_use, reason = plugin.user_manager.can_use(user_id)
@@ -371,6 +412,16 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
                     for _ in range(batch_count):
                         images.append(await plugin._run_with_retry(_do_generate))
 
+                if images and resource_keys:
+                    try:
+                        await asyncio.to_thread(
+                            plugin.preview_manager.save_first_if_missing,
+                            resource_keys,
+                            images[0],
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.exception("Failed to save generation preview")
+
                 sender_id = event.get_sender_id()
                 sender_name = event.get_sender_name()
                 if plugin.config.general.merge_draw_to_chat_record:
@@ -385,6 +436,23 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
                     yield event.chain_result([nodes])
                 else:
                     yield event.chain_result([Image.fromBytes(img) for img in images])
+                if plugin.config.general.send_generation_details and resource_keys:
+                    report = format_generation_report(
+                        event.message_str.removeprefix("nai").strip(),
+                        req,
+                        resource_keys,
+                    )
+                    yield event.chain_result([
+                        Nodes([
+                            Node(
+                                uin=sender_id,
+                                name=sender_name,
+                                content=[Plain(report), Image.fromBytes(images[0])]
+                                if images
+                                else [Plain(report)],
+                            )
+                        ])
+                    ])
             except GenerateError as e:
                 logger.error(f"Generation failed: {e}")
                 readable = format_readable_error(e)

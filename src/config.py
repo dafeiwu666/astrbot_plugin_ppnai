@@ -43,6 +43,15 @@ class GeneralConfig(BaseModel):
             },
         ),
     ] = True
+    send_generation_details: Annotated[
+        bool,
+        Field(
+            description="使用预设生成后发送完整参数记录",
+            json_schema_extra={
+                "hint": "默认关闭。开启后在使用预设、角色保持或图库资源生成完成后，以合并聊天记录发送原始指令、最终正负向提示词、参数和预览图。",
+            },
+        ),
+    ] = False
 
 
 class RequestConfig(BaseModel):
