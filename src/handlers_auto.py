@@ -97,6 +97,7 @@ async def _enable_auto_draw(
         resolved_images = await resolve_image_params(
             [*image_params, *iter_key_values(preset_contents)],
             uploaded_images,
+            plugin.image_library,
         )
     except Exception as e:  # noqa: BLE001
         return False, f"图片参数解析失败：{format_readable_error(e)}"
@@ -115,6 +116,7 @@ async def _enable_auto_draw(
         "vibe_transfer_images": resolved_images.vibe_transfer_images,
         "character_keep_image": resolved_images.character_keep_image,
         "vision_images": vision_images,
+        "resource_keys": resolved_images.resource_keys,
     }
     if hasattr(plugin, "persist_auto_draw_info"):
         await plugin.persist_auto_draw_info()
@@ -387,6 +389,7 @@ async def _auto_draw_generate(
                 resource_keys = [
                     *(f"preset:{name}" for name in presets),
                     *(f"ck:{opener_user_id}:{name}" for name in cs_names),
+                    *auto_info.get("resource_keys", []),
                 ]
 
                 await event.send(event.plain_result(f"🎨 自动画图中...{queue_status}"))

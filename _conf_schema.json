@@ -5,7 +5,8 @@
     "default": {
       "help_t2i": true,
       "merge_draw_to_chat_record": true,
-      "send_generation_details": false
+      "send_generation_details": false,
+      "image_library_admins": []
     },
     "description": "通用设置",
     "items": {
@@ -28,6 +29,16 @@
         "hint": "默认关闭。开启后发送原始指令、最终正负向提示词、参数和预览图。",
         "title": "Send Generation Details",
         "type": "bool"
+      },
+      "image_library_admins": {
+        "default": [],
+        "description": "额外图库管理员用户 ID",
+        "hint": "默认只有 bot 管理员；填写用户 ID 后允许这些用户管理图库图片。",
+        "title": "Image Library Admins",
+        "type": "list",
+        "items": {
+          "type": "string"
+        }
       }
     }
   },
