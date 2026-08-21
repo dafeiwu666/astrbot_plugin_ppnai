@@ -726,7 +726,6 @@ class Plugin(Star):
         """使用 pillowmd 将 Markdown 渲染为 PNG bytes 列表（不落盘，避免临时文件泄漏）"""
         try:
             import pillowmd
-            from PIL import Image as PILImage
 
             def _load_style():
                 # 样式路径
@@ -758,14 +757,8 @@ class Plugin(Star):
 
             async def _img_to_png_bytes(img) -> bytes:
                 def _do_save() -> bytes:
-                    # 固定为白底黑字，避免主题样式导致彩色背景或浅色文字不可读。
-                    base = img.convert("RGBA")
-                    white_bg = PILImage.new("RGBA", base.size, (255, 255, 255, 255))
-                    merged = PILImage.alpha_composite(white_bg, base).convert("L")
-                    bw = merged.point(lambda p: 0 if p < 180 else 255, mode="1")
-                    normalized = bw.convert("RGB")
                     buf = BytesIO()
-                    normalized.save(buf, format="PNG")
+                    img.save(buf, format="PNG")
                     return buf.getvalue()
 
                 return await asyncio.to_thread(_do_save)
