@@ -50,6 +50,15 @@ class RequestConfig(BaseModel):
         str,
         Field(description="画图接口地址"),
     ] = "https://image.novelai.net"
+    proxy_url: Annotated[
+        str,
+        Field(
+            description="画图接口代理地址",
+            json_schema_extra={
+                "hint": "留空则不使用显式代理。支持 http、https、socks5"
+            },
+        ),
+    ] = ""
     tokens: Annotated[
         list[str],
         Field(

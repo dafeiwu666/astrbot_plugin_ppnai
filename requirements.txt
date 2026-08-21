@@ -3,3 +3,4 @@
 cookit[pydantic]>=0.13.3
 jsonref>=1.1.0
 pillowmd>=0.7.0
+socksio>=1.0.0

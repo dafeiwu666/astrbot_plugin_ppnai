@@ -513,7 +513,7 @@ class Plugin(Star):
 
         # Per-plugin HTTP client (avoid module-level global state).
         self._http_client = None
-        self._http_client_sig: tuple[str, float, float] | None = None
+        self._http_client_sig: tuple[str, float, float, str] | None = None
         self._http_client_lock = asyncio.Lock()
 
         # Background tasks spawned by handlers (auto-draw etc.).
@@ -611,11 +611,12 @@ class Plugin(Star):
         except Exception:  # noqa: BLE001
             logger.exception("Failed to close http client")
 
-    def _http_client_signature(self) -> tuple[str, float, float]:
+    def _http_client_signature(self) -> tuple[str, float, float, str]:
         return (
             str(self.config.request.base_url),
             float(self.config.request.connect_timeout),
             float(self.config.request.read_timeout),
+            str(getattr(self.config.request, "proxy_url", "") or "").strip(),
         )
 
     async def get_http_client(self):
