@@ -10,24 +10,26 @@ from collections.abc import AsyncIterator
 
 
 async def handle_preset_list(plugin, event) -> AsyncIterator:
-    presets = await asyncio.to_thread(plugin.preset_manager.list_presets)
-    if not presets:
+    owner_id = plugin._get_resource_owner(event)
+    show_all = plugin._check_resource_admin(event) or plugin.config.general.list_all_resources
+    grouped = await asyncio.to_thread(
+        plugin.preset_manager.list_grouped, None if show_all else owner_id
+    )
+    if not grouped:
         yield event.plain_result("暂无预设，管理员可使用 nai预设添加 命令添加预设")
         return
-
-    result = "预设列表：\n" + "\n".join(f"• {title}" for title in presets)
+    result = "预设列表：\n" + "\n".join(
+        f"- {owner}:\n" + "\n".join(f"  • {title}" for title in titles)
+        for owner, titles in grouped.items()
+    )
     yield event.plain_result(result)
 
 
 async def handle_preset_view(plugin, event) -> AsyncIterator:
     args = event.message_str.removeprefix("nai预设查看").strip()
     if not args:
-        presets = await asyncio.to_thread(plugin.preset_manager.list_presets)
-        if not presets:
-            yield event.plain_result("暂无预设，管理员可使用 nai预设添加 命令添加预设")
-            return
-        result = "预设列表：\n" + "\n".join(f"• {title}" for title in presets)
-        yield event.plain_result(result)
+        async for result in handle_preset_list(plugin, event):
+            yield result
         return
 
     title = args.split()[0]
@@ -41,10 +43,6 @@ async def handle_preset_view(plugin, event) -> AsyncIterator:
 
 
 async def handle_preset_add(plugin, event) -> AsyncIterator:
-    if not plugin._check_permission(event):
-        yield event.plain_result("权限不足，仅管理员可使用此命令")
-        return
-
     full_text = event.message_str
     lines = full_text.split("\n", 1)
 
@@ -73,16 +71,17 @@ async def handle_preset_add(plugin, event) -> AsyncIterator:
         yield event.plain_result(f"预设 #{title} 已存在，如需修改请先删除再添加")
         return
 
-    await asyncio.to_thread(plugin.preset_manager.add_preset, title, content)
+    await asyncio.to_thread(
+        plugin.preset_manager.add_preset,
+        title,
+        content,
+        plugin._get_resource_owner(event),
+    )
     preview = content[:200] + ("..." if len(content) > 200 else "")
     yield event.plain_result(f"✅ 预设 #{title} 添加成功！\n\n预览：\n{preview}")
 
 
 async def handle_preset_delete(plugin, event) -> AsyncIterator:
-    if not plugin._check_permission(event):
-        yield event.plain_result("权限不足，仅管理员可使用此命令")
-        return
-
     args = event.message_str.removeprefix("nai预设删除").strip()
     if not args:
         yield event.plain_result("请指定预设名称，例如：nai预设删除 猫娘")
@@ -90,7 +89,8 @@ async def handle_preset_delete(plugin, event) -> AsyncIterator:
 
     title = args.split()[0]
 
-    deleted = await asyncio.to_thread(plugin.preset_manager.delete_preset, title)
+    owner_id = None if plugin._check_resource_admin(event) else plugin._get_resource_owner(event)
+    deleted = await asyncio.to_thread(plugin.preset_manager.delete_preset, title, owner_id)
     if deleted:
         yield event.plain_result(f"✅ 预设 #{title} 已删除")
     else:

@@ -90,6 +90,7 @@ from .src.user_manager import UserManager
 from .src.preset_manager import PresetManager
 from .src.preview_manager import PreviewManager
 from .src.image_library import ImageLibraryManager, LibraryImage
+from .src.image_history_cache import ImageHistoryCache
 from .src.queue_manager import get_shared_queue
 from .src.handlers_nai import handle_cmd_nai, handle_nai_draw
 try:
@@ -378,6 +379,7 @@ class STNaiGenerateImageTool(ConfigNeededTool):
     # Runtime-only dependency. Keep this as Any so Pydantic does not attempt to
     # generate a public tool schema for the cache manager implementation.
     vibe_cache_init: Any | None = None
+    image_cache_init: Any | None = None
 
     def __post_init__(self):
         super().__post_init__()
@@ -480,6 +482,7 @@ class STNaiGenerateImageTool(ConfigNeededTool):
                 vision_images=vision_images,
                 client_getter=self.client_getter,
                 vibe_cache=self.vibe_cache_init,
+                image_cache=self.image_cache_init,
             )
         except ReturnToLLMError as e:
             logger.debug(f"{e}")
@@ -543,6 +546,12 @@ class Plugin(Star):
 
         self._auto_draw_store = AutoDrawStoreManager(data_dir)
         self.vibe_cache_manager = VibeCacheManager(data_dir)
+        self.image_history_cache = ImageHistoryCache(
+            data_dir,
+            enabled=self.config.general.image_cache_enabled,
+            ttl_days=self.config.general.image_cache_ttl_days,
+            max_size_mb=self.config.general.image_cache_max_size_mb,
+        )
         self.preview_manager = PreviewManager(data_dir)
         self.image_library = ImageLibraryManager(data_dir)
         self._pending_image_library: dict[tuple[str, str], dict[str, object]] = {}
@@ -569,6 +578,7 @@ class Plugin(Star):
                 config_init=self.config,
                 client_getter_init=self.get_http_client,
                 vibe_cache_init=self.vibe_cache_manager,
+                image_cache_init=self.image_history_cache,
             )
         )
 
@@ -589,6 +599,11 @@ class Plugin(Star):
             await asyncio.to_thread(self.vibe_cache_manager.cleanup_expired)
         except Exception:  # noqa: BLE001
             logger.exception("Failed to clean up vibe cache")
+
+        try:
+            await asyncio.to_thread(self.image_history_cache.cleanup)
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to clean up image history cache")
 
         # 避免在事件循环中做同步文件 I/O
         self._usage_md_cache = await asyncio.to_thread(load_usage_md)
@@ -756,6 +771,15 @@ class Plugin(Star):
     def _get_user_id(self, event: AstrMessageEvent) -> str:
         """从事件中获取用户ID"""
         return event.get_sender_id()
+
+    def _get_resource_owner(self, event: AstrMessageEvent) -> str:
+        """Return a stable platform-qualified owner identifier for shared resources."""
+        platform = getattr(event, "platform", None)
+        getter = getattr(event, "get_platform_name", None)
+        if callable(getter):
+            platform = getter()
+        platform = str(platform or "unknown")
+        return f"{platform}:{self._get_user_id(event)}"
     
     def _check_permission(self, event: AstrMessageEvent) -> bool:
         """检查是否是管理员"""
@@ -771,9 +795,13 @@ class Plugin(Star):
         return False
 
     def _check_image_library_permission(self, event: AstrMessageEvent) -> bool:
-        return self._check_permission(event) or self._get_user_id(event) in set(
-            self.config.general.image_library_admins
-        )
+        return self._check_resource_admin(event)
+
+    def _check_resource_admin(self, event: AstrMessageEvent) -> bool:
+        configured = set(getattr(self.config.general, "resource_admins", []))
+        # Keep accepting the old setting while configurations migrate.
+        configured.update(getattr(self.config.general, "image_library_admins", []))
+        return self._check_permission(event) or self._get_user_id(event) in configured
     
     def _get_next_token(self) -> str:
         """轮询获取下一个可用的 Token"""
@@ -1169,9 +1197,6 @@ class Plugin(Star):
 
     @event_filter.command("nai图片添加")
     async def cmd_image_library_add(self, event: AstrMessageEvent):
-        if not self._check_image_library_permission(event):
-            yield event.plain_result("权限不足，仅图库管理员可使用此命令")
-            return
         name = event.message_str.removeprefix("nai图片添加").strip()
         try:
             name = self.image_library.validate_name(name)
@@ -1188,14 +1213,16 @@ class Plugin(Star):
 
     @event_filter.command("nai图片修改")
     async def cmd_image_library_modify(self, event: AstrMessageEvent):
-        if not self._check_image_library_permission(event):
-            yield event.plain_result("权限不足，仅图库管理员可使用此命令")
-            return
         name = event.message_str.removeprefix("nai图片修改").strip()
         try:
             name = self.image_library.validate_name(name)
             if not await asyncio.to_thread(self.image_library.exists, name):
                 yield event.plain_result(f"图库图片不存在：{name}")
+                return
+            if not self._check_resource_admin(event) and await asyncio.to_thread(
+                self.image_library.owner, name
+            ) != self._get_resource_owner(event):
+                yield event.plain_result("权限不足，只能修改自己添加的图库图片")
                 return
         except ValueError as exc:
             yield event.plain_result(str(exc))
@@ -1212,10 +1239,14 @@ class Plugin(Star):
     async def cmd_image_library_view(self, event: AstrMessageEvent):
         name = event.message_str.removeprefix("nai图片查看").strip()
         if not name:
-            names = await asyncio.to_thread(self.image_library.list_names)
+            owner_id = None if self._check_resource_admin(event) or self.config.general.list_all_resources else self._get_resource_owner(event)
+            grouped = await asyncio.to_thread(self.image_library.list_grouped, owner_id)
             yield event.plain_result(
-                "图库列表：\n" + "\n".join(f"• {item}" for item in names)
-                if names
+                "图库列表：\n" + "\n".join(
+                    f"- {owner}:\n" + "\n".join(f"  • {item}" for item in names)
+                    for owner, names in grouped.items()
+                )
+                if grouped
                 else "图库为空"
             )
             return
@@ -1236,11 +1267,13 @@ class Plugin(Star):
 
     @event_filter.command("nai图片删除")
     async def cmd_image_library_delete(self, event: AstrMessageEvent):
-        if not self._check_image_library_permission(event):
-            yield event.plain_result("权限不足，仅图库管理员可使用此命令")
-            return
         name = event.message_str.removeprefix("nai图片删除").strip()
         try:
+            if not self._check_resource_admin(event) and await asyncio.to_thread(
+                self.image_library.owner, name
+            ) != self._get_resource_owner(event):
+                yield event.plain_result("权限不足，只能删除自己添加的图库图片")
+                return
             deleted = await asyncio.to_thread(self.image_library.delete, name)
         except ValueError as exc:
             yield event.plain_result(str(exc))
@@ -1251,10 +1284,14 @@ class Plugin(Star):
 
     @event_filter.command("nai图库")
     async def cmd_image_library_list(self, event: AstrMessageEvent):
-        names = await asyncio.to_thread(self.image_library.list_names)
+        owner_id = None if self._check_resource_admin(event) or self.config.general.list_all_resources else self._get_resource_owner(event)
+        grouped = await asyncio.to_thread(self.image_library.list_grouped, owner_id)
         yield event.plain_result(
-            "图库列表：\n" + "\n".join(f"• {name}" for name in names)
-            if names
+            "图库列表：\n" + "\n".join(
+                f"- {owner}:\n" + "\n".join(f"  • {name}" for name in names)
+                for owner, names in grouped.items()
+            )
+            if grouped
             else "图库为空"
         )
 
@@ -1281,6 +1318,7 @@ class Plugin(Star):
                 str(pending["name"]),
                 data_uri,
                 overwrite=bool(pending["overwrite"]),
+                owner_id=self._get_resource_owner(event),
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Image library upload failed")

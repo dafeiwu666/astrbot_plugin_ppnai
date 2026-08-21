@@ -47,6 +47,19 @@ class CharacterKeepStore:
             return []
         return sorted([p.stem for p in user_dir.glob("*.txt") if p.is_file()])
 
+    def list_grouped(self, user_id: str | None = None) -> dict[str, list[str]]:
+        if user_id is not None:
+            return {user_id: self.list_names(user_id)} if self.list_names(user_id) else {}
+        if not self.base_dir.exists():
+            return {}
+        grouped: dict[str, list[str]] = {}
+        for directory in self.base_dir.iterdir():
+            if directory.is_dir():
+                names = sorted(p.stem for p in directory.glob("*.txt") if p.is_file())
+                if names:
+                    grouped[directory.name] = names
+        return dict(sorted(grouped.items()))
+
     def exists(self, user_id: str, name: str) -> bool:
         return self._get_entry_path(user_id, name).exists()
 

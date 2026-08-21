@@ -12,6 +12,7 @@ from astrbot.core.astr_agent_context import AstrAgentContext
 
 from .config import Config
 from .data_source import VibeCacheManager, wrapped_generate
+from .image_history_cache import ImageHistoryCache
 from .llm_schema import (
     GENERATE_IMAGE_ADVANCED_SCHEMA_TXT,
     OrientationType,
@@ -178,6 +179,7 @@ async def llm_generate_image(
     token: str = "",
     client_getter: Any | None = None,
     vibe_cache: VibeCacheManager | None = None,
+    image_cache: ImageHistoryCache | None = None,
 ):
     """
     使用 LLM 生成高级参数并生成图片
@@ -213,6 +215,8 @@ async def llm_generate_image(
             token=token,
             client_getter=client_getter,
             vibe_cache=vibe_cache,
+            image_cache=image_cache,
+            owner_id=event.get_sender_id(),
         )
     except Exception as e:
         logger.debug("Failed to generate image", exc_info=e)
