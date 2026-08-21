@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## v1.5.8
+- 新增nai5模型选择
+- 新增自定义代理网址
+
 ## v1.5.7
 
 Enhancements:
