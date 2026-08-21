@@ -39,11 +39,17 @@ async def handle_cs(plugin, event) -> AsyncIterator:
     user_id = plugin._get_user_id(event)
 
     if not raw:
-        names = await asyncio.to_thread(plugin.cs_store.list_names, user_id)
-        if not names:
+        show_all = plugin._check_resource_admin(event) or plugin.config.general.list_all_resources
+        grouped = await asyncio.to_thread(
+            plugin.cs_store.list_grouped, None if show_all else user_id
+        )
+        if not grouped:
             yield event.plain_result("暂无角色保持记录，可使用 /cs 创建")
             return
-        result = "角色保持列表：\n" + "\n".join(f"• {name}" for name in names)
+        result = "角色保持列表：\n" + "\n".join(
+            f"- {owner}:\n" + "\n".join(f"  • {name}" for name in names)
+            for owner, names in grouped.items()
+        )
         yield event.plain_result(result)
         return
 
@@ -117,13 +123,17 @@ async def handle_cs(plugin, event) -> AsyncIterator:
 
 
 async def handle_dcs(plugin, event) -> AsyncIterator:
-    name = event.message_str.removeprefix("dcs").strip()
+    raw = event.message_str.removeprefix("dcs").strip()
+    parts = raw.split(maxsplit=1)
+    target_user = plugin._get_user_id(event)
+    name = raw
+    if plugin._check_resource_admin(event) and len(parts) == 2:
+        target_user, name = parts
     if not name:
         yield event.plain_result("请提供要删除的名称，例如：/dcs 角色名")
         return
 
-    user_id = plugin._get_user_id(event)
-    deleted = await asyncio.to_thread(plugin.cs_store.delete, user_id, name)
+    deleted = await asyncio.to_thread(plugin.cs_store.delete, target_user, name)
     if deleted:
         yield event.plain_result(f"✅ 角色保持 {name} 已删除")
     else:
@@ -131,23 +141,31 @@ async def handle_dcs(plugin, event) -> AsyncIterator:
 
 
 async def handle_scs(plugin, event) -> AsyncIterator:
-    name = event.message_str.removeprefix("scs").strip()
+    raw = event.message_str.removeprefix("scs").strip()
+    parts = raw.split(maxsplit=1)
+    target_user = plugin._get_user_id(event)
+    name = raw
+    if plugin._check_resource_admin(event) and len(parts) == 2:
+        target_user, name = parts
     if not name:
         user_id = plugin._get_user_id(event)
-        names = await asyncio.to_thread(plugin.cs_store.list_names, user_id)
-        if not names:
+        show_all = plugin._check_resource_admin(event) or plugin.config.general.list_all_resources
+        grouped = await asyncio.to_thread(plugin.cs_store.list_grouped, None if show_all else user_id)
+        if not grouped:
             yield event.plain_result("暂无角色保持记录，可使用 /cs 创建")
             return
-        result = "角色保持列表：\n" + "\n".join(f"• {item}" for item in names)
+        result = "角色保持列表：\n" + "\n".join(
+            f"- {owner}:\n" + "\n".join(f"  • {item}" for item in names)
+            for owner, names in grouped.items()
+        )
         yield event.plain_result(result)
         return
 
-    user_id = plugin._get_user_id(event)
-    if not await asyncio.to_thread(plugin.cs_store.exists, user_id, name):
+    if not await asyncio.to_thread(plugin.cs_store.exists, target_user, name):
         yield event.plain_result(f"角色保持 {name} 不存在")
         return
 
-    content = await asyncio.to_thread(plugin.cs_store.read, user_id, name)
+    content = await asyncio.to_thread(plugin.cs_store.read, target_user, name)
     tag = extract_nai_tag(content)
     if not tag:
         yield event.plain_result("未找到 NovelAI tag style 外貌提示词内容")
@@ -162,24 +180,28 @@ async def handle_ccs(plugin, event) -> AsyncIterator:
         yield event.plain_result("请提供名称和修改内容，例如：/ccs 角色名 新内容")
         return
 
-    parts = raw.split(maxsplit=1)
+    parts = raw.split()
     if len(parts) < 2:
         yield event.plain_result("请提供修改内容，例如：/ccs 角色名 新内容")
         return
 
-    name, new_tag = parts[0], parts[1].strip()
+    target_user = plugin._get_user_id(event)
+    if plugin._check_resource_admin(event) and len(parts) >= 3:
+        target_user, name = parts[0], parts[1]
+        new_tag = " ".join(parts[2:]).strip()
+    else:
+        name, new_tag = parts[0], " ".join(parts[1:]).strip()
     if not new_tag:
         yield event.plain_result("修改内容不能为空")
         return
 
-    user_id = plugin._get_user_id(event)
-    if not await asyncio.to_thread(plugin.cs_store.exists, user_id, name):
+    if not await asyncio.to_thread(plugin.cs_store.exists, target_user, name):
         yield event.plain_result(f"角色保持 {name} 不存在")
         return
 
-    content = await asyncio.to_thread(plugin.cs_store.read, user_id, name)
+    content = await asyncio.to_thread(plugin.cs_store.read, target_user, name)
     updated, replaced = replace_nai_tag(content, new_tag)
-    await asyncio.to_thread(plugin.cs_store.write, user_id, name, updated, overwrite=True)
+    await asyncio.to_thread(plugin.cs_store.write, target_user, name, updated, overwrite=True)
 
     if replaced:
         yield event.plain_result(f"✅ 角色保持 {name} 已更新")
