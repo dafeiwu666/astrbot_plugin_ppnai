@@ -1,5 +1,6 @@
 """Helpers for resolving uploaded images used by AI draw commands."""
 
+import asyncio
 from collections.abc import Iterable, Mapping
 from typing import Any
 
