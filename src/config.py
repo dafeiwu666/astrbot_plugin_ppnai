@@ -52,6 +52,9 @@ class GeneralConfig(BaseModel):
             },
         ),
     ] = False
+    image_cache_enabled: bool = False
+    image_cache_ttl_days: int = 7
+    image_cache_max_size_mb: int = 1024
     image_library_admins: Annotated[
         list[str],
         Field(

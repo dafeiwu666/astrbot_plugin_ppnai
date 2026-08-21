@@ -429,6 +429,8 @@ async def _auto_draw_generate(
                                 token=token,
                                 client_getter=plugin.get_http_client,
                                 vibe_cache=plugin.vibe_cache_manager,
+                                image_cache=plugin.image_history_cache,
+                                owner_id=opener_user_id,
                             )
 
                         images.append(await plugin._run_with_retry(_do_generate))

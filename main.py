@@ -90,6 +90,7 @@ from .src.user_manager import UserManager
 from .src.preset_manager import PresetManager
 from .src.preview_manager import PreviewManager
 from .src.image_library import ImageLibraryManager, LibraryImage
+from .src.image_history_cache import ImageHistoryCache
 from .src.queue_manager import get_shared_queue
 from .src.handlers_nai import handle_cmd_nai, handle_nai_draw
 try:
@@ -378,6 +379,7 @@ class STNaiGenerateImageTool(ConfigNeededTool):
     # Runtime-only dependency. Keep this as Any so Pydantic does not attempt to
     # generate a public tool schema for the cache manager implementation.
     vibe_cache_init: Any | None = None
+    image_cache_init: Any | None = None
 
     def __post_init__(self):
         super().__post_init__()
@@ -480,6 +482,7 @@ class STNaiGenerateImageTool(ConfigNeededTool):
                 vision_images=vision_images,
                 client_getter=self.client_getter,
                 vibe_cache=self.vibe_cache_init,
+                image_cache=self.image_cache_init,
             )
         except ReturnToLLMError as e:
             logger.debug(f"{e}")
@@ -543,6 +546,12 @@ class Plugin(Star):
 
         self._auto_draw_store = AutoDrawStoreManager(data_dir)
         self.vibe_cache_manager = VibeCacheManager(data_dir)
+        self.image_history_cache = ImageHistoryCache(
+            data_dir,
+            enabled=self.config.general.image_cache_enabled,
+            ttl_days=self.config.general.image_cache_ttl_days,
+            max_size_mb=self.config.general.image_cache_max_size_mb,
+        )
         self.preview_manager = PreviewManager(data_dir)
         self.image_library = ImageLibraryManager(data_dir)
         self._pending_image_library: dict[tuple[str, str], dict[str, object]] = {}
@@ -569,6 +578,7 @@ class Plugin(Star):
                 config_init=self.config,
                 client_getter_init=self.get_http_client,
                 vibe_cache_init=self.vibe_cache_manager,
+                image_cache_init=self.image_history_cache,
             )
         )
 
@@ -589,6 +599,11 @@ class Plugin(Star):
             await asyncio.to_thread(self.vibe_cache_manager.cleanup_expired)
         except Exception:  # noqa: BLE001
             logger.exception("Failed to clean up vibe cache")
+
+        try:
+            await asyncio.to_thread(self.image_history_cache.cleanup)
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to clean up image history cache")
 
         # 避免在事件循环中做同步文件 I/O
         self._usage_md_cache = await asyncio.to_thread(load_usage_md)

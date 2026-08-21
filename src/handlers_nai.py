@@ -243,6 +243,8 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
                                 token=token,
                                 client_getter=plugin.get_http_client,
                                 vibe_cache=plugin.vibe_cache_manager,
+                                image_cache=plugin.image_history_cache,
+                                owner_id=event.get_sender_id(),
                             )
 
                         images.append(await plugin._run_with_retry(_do_generate))
@@ -415,6 +417,8 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
                             token=token,
                             client_getter=plugin.get_http_client,
                             vibe_cache=plugin.vibe_cache_manager,
+                            image_cache=plugin.image_history_cache,
+                            owner_id=event.get_sender_id(),
                         )
 
                     images: list[bytes] = []
