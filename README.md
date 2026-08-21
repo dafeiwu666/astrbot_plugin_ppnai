@@ -154,6 +154,9 @@ vibe_transfer_info_extract=0.8
 [附带一张图片]
 ```
 
+> 注意：`vibe_transfer` 和 `character_keep` 不能在同一次请求中同时使用，
+> 这是 NovelAI 官方接口的限制。
+
 **2. 角色保持 (Character Keep)**
 ```text
 nai 1girl
