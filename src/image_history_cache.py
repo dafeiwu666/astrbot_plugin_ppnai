@@ -60,6 +60,9 @@ class ImageHistoryCache:
             now = time.time()
             if key in index:
                 index[key]["ts"] = now
+                owners = index[key].setdefault("owner_ids", [])
+                if isinstance(owners, list) and owner_id not in owners:
+                    owners.append(owner_id)
                 self._save()
                 return key
             directory = self.base_dir / kind
@@ -70,6 +73,7 @@ class ImageHistoryCache:
                 "kind": kind,
                 "file": f"{kind}/{filename}",
                 "owner_id": owner_id,
+                "owner_ids": [owner_id],
                 "ts": now,
                 "size": len(data),
             }
