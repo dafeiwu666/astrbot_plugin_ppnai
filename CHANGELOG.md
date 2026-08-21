@@ -1,6 +1,6 @@
 # CHANGELOG
 
-## v1.5.8
+## v1.5.9
 - 新增nai5模型选择
 - image.novelai.net无法直连，非国外机器需要proxy，新增自定义代理网址
 
