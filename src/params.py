@@ -11,9 +11,9 @@ from typing_extensions import TypedDict, Unpack
 
 try:
     # Prefer public API exports when available
-    from astrbot.api.message_components import BaseMessageComponent, Image
+    from astrbot.api.message_components import BaseMessageComponent, Image, Reply
 except Exception:  # pragma: no cover
-    from astrbot.core.message.components import BaseMessageComponent, Image
+    from astrbot.core.message.components import BaseMessageComponent, Image, Reply
 
 try:
     # Newer AstrBot versions expose message components from astrbot.api
@@ -32,6 +32,20 @@ def _is_image_component(comp: BaseMessageComponent) -> bool:
         hasattr(comp, "convert_to_base64")
         and "image" in comp.__class__.__name__.lower()
     )
+
+
+def _collect_images_with_replies(message: list) -> list[Image]:
+    """Collect images from the current message and one-level Reply chains."""
+    images: list[Image] = []
+    for component in message:
+        if _is_image_component(component):
+            images.append(component)
+            continue
+        if isinstance(component, Reply):
+            for reply_component in getattr(component, "chain", None) or []:
+                if _is_image_component(reply_component):
+                    images.append(reply_component)
+    return images
 
 from .models import (
     AVAILABLE_DOTH,
@@ -934,7 +948,7 @@ async def parse_req(
         is_whitelisted: 用户是否在白名单中（白名单用户不受步数28和自定义尺寸限制）
     """
     input_params = list(parse_params(raw_params))
-    images = [comp for comp in message if _is_image_component(comp)]
+    images = _collect_images_with_replies(message)
     req = await req_model_assembler.apply(input_params, images, config, is_whitelisted)
     
     # 进行权限检查
@@ -955,7 +969,7 @@ async def parse_req_with_remaining_images(
     and similar image-consuming parameters have popped from it.
     """
     input_params = list(parse_params(raw_params))
-    images: list[Image] = [comp for comp in message if _is_image_component(comp)]
+    images: list[Image] = _collect_images_with_replies(message)
     req = await req_model_assembler.apply(input_params, images, config, is_whitelisted)
     post_check_limits(req, config, is_whitelisted)
     return req, images

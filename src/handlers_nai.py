@@ -11,7 +11,7 @@ from .data_source import GenerateError, wrapped_generate
 from .image_params import iter_key_values, resolve_image_params
 from .llm import ReturnToLLMError, llm_generate_advanced_req
 from .llm_utils import format_readable_error
-from .params import parse_req
+from .params import _collect_images_with_replies, parse_req
 from .handlers_shared import (
     apply_explicit_overrides,
     extract_batch_count,
@@ -113,7 +113,7 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
             return
         preset_contents.append(preset.content)
 
-    uploaded_images = [x for x in event.message_obj.message if isinstance(x, Image)]
+    uploaded_images = _collect_images_with_replies(event.message_obj.message)
     try:
         resolved_images = await resolve_image_params(
             [*image_params, *iter_key_values(preset_contents)],
@@ -234,6 +234,7 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
                                 plugin.config,
                                 token=token,
                                 client_getter=plugin.get_http_client,
+                                vibe_cache=plugin.vibe_cache_manager,
                             )
 
                         images.append(await plugin._run_with_retry(_do_generate))
@@ -363,6 +364,7 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
                             plugin.config,
                             token=token,
                             client_getter=plugin.get_http_client,
+                            vibe_cache=plugin.vibe_cache_manager,
                         )
 
                     images: list[bytes] = []
