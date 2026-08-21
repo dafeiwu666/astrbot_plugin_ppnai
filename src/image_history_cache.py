@@ -11,8 +11,19 @@ from pathlib import Path
 
 
 class ImageHistoryCache:
-    def __init__(self, data_dir: Path, *, enabled: bool, ttl_days: int, max_size_mb: int) -> None:
+    def __init__(
+        self,
+        data_dir: Path,
+        *,
+        enabled: bool = False,
+        vibe_enabled: bool = True,
+        ttl_days: int,
+        max_size_mb: int,
+    ) -> None:
+        # ``enabled`` controls generated-image caching. Vibe input caching is
+        # intentionally independent because it is also useful for diagnostics.
         self.enabled = enabled
+        self.vibe_enabled = vibe_enabled
         self.ttl_seconds = max(0, ttl_days) * 86400
         self.max_bytes = max(0, max_size_mb) * 1024 * 1024
         self.base_dir = data_dir / "image_cache"
@@ -51,7 +62,10 @@ class ImageHistoryCache:
         temporary.replace(self.index_file)
 
     def put_bytes(self, kind: str, data: bytes, owner_id: str) -> str | None:
-        if not self.enabled:
+        if kind == "vibe_inputs":
+            if not self.vibe_enabled:
+                return None
+        elif not self.enabled:
             return None
         with self._lock:
             digest = hashlib.sha256(data).hexdigest()

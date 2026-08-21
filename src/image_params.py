@@ -75,16 +75,33 @@ async def resolve_image_params(
             raise ValueError(f"参数 {param_name} 需要上传图片")
         return image_queue.pop(0)
 
+    async def is_library_name(value: str) -> bool:
+        if image_library is None:
+            return False
+        try:
+            return await asyncio.to_thread(image_library.exists, value.strip())
+        except (OSError, RuntimeError, ValueError):
+            return False
+
     async def resolve_reference(value: str, param_name: str) -> str:
         normalized = value.strip().lower()
         if normalized in FALSE_VALUES:
             return ""
+        if image_library is None:
+            if normalized in {"true", "1", "on", "yes", "是"}:
+                return await resolve_image(pop_image(param_name))
+            raise ValueError(f"参数 {param_name} 引用了图库，但图库未启用")
+
+        # 图库名称可能是数字（例如 ``1``）。优先检查图库，避免把它
+        # 误判成布尔值 true，从而错误地要求用户上传图片。
+        library_name = value.strip()
+        if await is_library_name(library_name):
+            result.resource_keys.append(f"image:{library_name}")
+            return await asyncio.to_thread(image_library.read_data_uri, library_name)
+
         if normalized in {"true", "1", "on", "yes", "是"}:
             return await resolve_image(pop_image(param_name))
-        if image_library is None:
-            raise ValueError(f"参数 {param_name} 引用了图库，但图库未启用")
-        result.resource_keys.append(f"image:{value.strip()}")
-        return await asyncio.to_thread(image_library.read_data_uri, value.strip())
+        raise ValueError(f"图库图片不存在：{library_name}")
 
     for key, value in params:
         if key in I2I_KEYS:
@@ -101,18 +118,17 @@ async def resolve_image_params(
             normalized = value.strip().lower()
             if normalized in FALSE_VALUES:
                 continue
-            if normalized in {"true", "1", "on", "yes", "是"}:
+            # 与 i2i / vibe_transfer 使用同一判定：先尝试图库名，再走显式布尔上传。
+            reference = await resolve_reference(value, key)
+            if await is_library_name(value):
+                # Apply the same resize/padding/JPEG conversion to named library images.
+                result.character_keep_image = await aconvert_to_jpeg_for_character_keep(
+                    reference
+                )
+            elif normalized in {"true", "1", "on", "yes", "是"}:
                 # Character Reference requires the API's allowed size and JPEG format.
                 result.character_keep_image = await resolve_image_as_jpeg(
                     pop_image(key)
-                )
-            else:
-                # Apply the same resize/padding/JPEG conversion to named library images.
-                library_data_uri = await resolve_reference(value, key)
-                result.character_keep_image = (
-                    await aconvert_to_jpeg_for_character_keep(library_data_uri)
-                    if library_data_uri
-                    else None
                 )
 
     result.vision_images = image_queue

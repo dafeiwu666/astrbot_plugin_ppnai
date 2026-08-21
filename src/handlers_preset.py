@@ -71,7 +71,7 @@ async def handle_preset_add(plugin, event) -> AsyncIterator:
         yield event.plain_result(
             "请指定预设标题和内容，格式：\n"
             "nai预设添加 标题名\n"
-            "这里是预设内容..."
+            "这里是预设内容以及预览图..."
         )
         return
 
@@ -81,14 +81,14 @@ async def handle_preset_add(plugin, event) -> AsyncIterator:
         yield event.plain_result(
             f"请在标题后换行添加预设内容，格式：\n"
             f"nai预设添加 {title}\n"
-            f"这里是预设内容..."
+            f"这里是预设内容以及预览图..."
         )
         return
 
     content = lines[1]
 
     if await asyncio.to_thread(plugin.preset_manager.get_preset, title) is not None:
-        yield event.plain_result(f"预设 #{title} 已存在，如需修改请先删除再添加")
+        yield event.plain_result(f"预设 #{title} 已存在，如需修改请先nai预设修改")
         return
 
     await asyncio.to_thread(
@@ -115,10 +115,10 @@ async def handle_preset_modify(plugin, event) -> AsyncIterator:
     lines = full_text.split("\n", 1)
     title = lines[0].removeprefix("nai预设修改").strip()
     if not title:
-        yield event.plain_result("请指定预设标题和内容，格式：\nnai预设修改 标题名\n这里是新内容...")
+        yield event.plain_result("请指定预设标题和内容，格式：\nnai预设修改 标题名\n这里是新内容以及预览图...")
         return
     if len(lines) < 2 or not lines[1].strip():
-        yield event.plain_result(f"请在标题后换行添加新内容：\nnai预设修改 {title}\n这里是新内容...")
+        yield event.plain_result(f"请在标题后换行添加新内容：\nnai预设修改 {title}\n这里是新内容以及预览图...")
         return
 
     owner_id = None if plugin._check_resource_admin(event) else plugin._get_resource_owner(event)

@@ -52,9 +52,26 @@ class GeneralConfig(BaseModel):
             },
         ),
     ] = False
-    image_cache_enabled: bool = False
+    vibe_image_cache_enabled: Annotated[
+        bool,
+        Field(
+            description="缓存氛围转移输入原图",
+            json_schema_extra={
+                "hint": "缓存氛围转移使用的输入原图，便于排查和复用；默认开启。",
+            },
+        ),
+    ] = True
+    image_cache_enabled: Annotated[
+        bool,
+        Field(
+            description="缓存全部 AI 生成图片",
+            json_schema_extra={
+                "hint": "缓存所有 AI 生成的图片；默认关闭，开启后会占用缓存容量。",
+            },
+        ),
+    ] = False
     image_cache_ttl_days: int = 7
-    image_cache_max_size_mb: int = 1024
+    image_cache_max_size_mb: int = 10
     resource_admins: Annotated[
         list[str],
         Field(

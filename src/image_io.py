@@ -15,7 +15,14 @@ from .utils import get_base64_mime
 async def resolve_image(image: Image) -> str:
     """Normalize AstrBot image to data URI base64 string."""
     b64 = await image.convert_to_base64()
-    if isinstance(b64, str) and b64.startswith("base64://"):
+    if not isinstance(b64, str):
+        raise TypeError("image.convert_to_base64() must return str")
+
+    b64 = b64.strip()
+    if b64.startswith("data:"):
+        # LibraryImage already returns a complete data URI.
+        return b64
+    if b64.startswith("base64://"):
         b64 = b64.removeprefix("base64://")
     return f"data:{get_base64_mime(b64, 'image/jpeg')};base64,{b64}"
 

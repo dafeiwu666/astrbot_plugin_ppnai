@@ -6,9 +6,10 @@
       "help_t2i": true,
       "merge_draw_to_chat_record": true,
       "send_generation_details": false,
+      "vibe_image_cache_enabled": true,
       "image_cache_enabled": false,
       "image_cache_ttl_days": 7,
-      "image_cache_max_size_mb": 1024,
+      "image_cache_max_size_mb": 10,
       "resource_admins": [],
       "list_all_resources": false
     },
@@ -34,10 +35,17 @@
         "title": "Send Generation Details",
         "type": "bool"
       },
+      "vibe_image_cache_enabled": {
+        "default": true,
+        "description": "缓存氛围转移输入原图",
+        "hint": "缓存氛围转移使用的输入原图，便于排查和复用；默认开启。",
+        "title": "Vibe Image Cache Enabled",
+        "type": "bool"
+      },
       "image_cache_enabled": {
         "default": false,
-        "description": "缓存 Vibe 输入原图和全部 AI 生成图片",
-        "hint": "默认关闭；缓存仅供管理和排查，不影响生图计费。",
+        "description": "缓存全部 AI 生成图片",
+        "hint": "缓存所有 AI 生成的图片；默认关闭，开启后会占用缓存容量。",
         "title": "Image Cache Enabled",
         "type": "bool"
       },
@@ -48,7 +56,7 @@
         "type": "int"
       },
       "image_cache_max_size_mb": {
-        "default": 1024,
+        "default": 10,
         "description": "图片缓存最大容量（MB）",
         "title": "Image Cache Max Size MB",
         "type": "int"

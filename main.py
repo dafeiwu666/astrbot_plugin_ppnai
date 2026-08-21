@@ -553,6 +553,7 @@ class Plugin(Star):
         self.image_history_cache = ImageHistoryCache(
             data_dir,
             enabled=self.config.general.image_cache_enabled,
+            vibe_enabled=self.config.general.vibe_image_cache_enabled,
             ttl_days=self.config.general.image_cache_ttl_days,
             max_size_mb=self.config.general.image_cache_max_size_mb,
         )
@@ -1107,14 +1108,31 @@ class Plugin(Star):
             key, value = (part.strip() for part in line.split("=", 1))
             if key not in image_params or value.lower() in {"false", "0", "off", "关"}:
                 continue
-            if value.lower() in {"true", "1", "on", "yes", "是"}:
+            is_library_name = False
+            try:
+                is_library_name = await asyncio.to_thread(
+                    self.image_library.exists,
+                    value,
+                )
+            except Exception:
+                is_library_name = False
+
+            # 图库名称优先。避免 ``i2i=1`` 这种名字被误判为布尔 true。
+            if is_library_name:
+                data_uri = await asyncio.to_thread(
+                    self.image_library.read_data_uri,
+                    value,
+                )
+                parse_images.append(LibraryImage(data_uri))
+            elif value.lower() in {"true", "1", "on", "yes", "是"}:
                 if source_index >= len(source_images):
                     raise ValueError(f"参数 {key} 需要上传图片")
                 parse_images.append(source_images[source_index])
                 source_index += 1
             else:
                 data_uri = await asyncio.to_thread(
-                    self.image_library.read_data_uri, value
+                    self.image_library.read_data_uri,
+                    value,
                 )
                 parse_images.append(LibraryImage(data_uri))
         parse_images.extend(source_images[source_index:])
@@ -1213,7 +1231,7 @@ class Plugin(Star):
             "overwrite": False,
             "expires_at": time.time() + 60,
         }
-        yield event.plain_result(f"请在 60 秒内发送一张图片以添加图库：{name}")
+        yield event.plain_result(f"请在 60 秒内发送一张图片以添加图库，可多添加一张预览图：{name}")
 
     @event_filter.command("nai图片修改")
     async def cmd_image_library_modify(self, event: AstrMessageEvent):
@@ -1237,7 +1255,7 @@ class Plugin(Star):
             "overwrite": True,
             "expires_at": time.time() + 60,
         }
-        yield event.plain_result(f"请在 60 秒内发送一张图片以修改图库：{name}")
+        yield event.plain_result(f"请在 60 秒内发送一张图片以修改图库，可多添加一张预览图：{name}")
 
     @event_filter.command("nai图片查看")
     async def cmd_image_library_view(self, event: AstrMessageEvent):

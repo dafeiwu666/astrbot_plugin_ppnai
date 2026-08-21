@@ -407,6 +407,17 @@ character_keep=true
 - 使用的输入图片（若有）
 该功能默认关闭。
 
+### 图片缓存
+
+- `general.vibe_image_cache_enabled`：缓存氛围转移输入原图，默认开启。
+- `general.image_cache_enabled`：缓存全部 AI 生成图片，默认关闭。
+- `general.image_cache_max_size_mb`：图片缓存容量上限，默认 10MB。
+
+Vibe 输入原图缓存只保存输入图片用于排查，不会替代或绕过 NovelAI 的氛围转移编码请求。
+关闭缓存时仍会直接将输入图片提交给官方编码接口；如果接口返回
+`GenerateError: 氛围转移参考图编码失败 (status=500)`，通常是官方编码服务、图片格式或图片内容导致，
+与本地是否保存输入原图无关。
+
 
 ## 📋 可用模型
 
