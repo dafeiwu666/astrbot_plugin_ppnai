@@ -133,7 +133,13 @@ async def handle_dcs(plugin, event) -> AsyncIterator:
 async def handle_scs(plugin, event) -> AsyncIterator:
     name = event.message_str.removeprefix("scs").strip()
     if not name:
-        yield event.plain_result("请提供名称，例如：/scs 角色名")
+        user_id = plugin._get_user_id(event)
+        names = await asyncio.to_thread(plugin.cs_store.list_names, user_id)
+        if not names:
+            yield event.plain_result("暂无角色保持记录，可使用 /cs 创建")
+            return
+        result = "角色保持列表：\n" + "\n".join(f"• {item}" for item in names)
+        yield event.plain_result(result)
         return
 
     user_id = plugin._get_user_id(event)

@@ -1212,7 +1212,12 @@ class Plugin(Star):
     async def cmd_image_library_view(self, event: AstrMessageEvent):
         name = event.message_str.removeprefix("nai图片查看").strip()
         if not name:
-            yield event.plain_result("请指定图库名称")
+            names = await asyncio.to_thread(self.image_library.list_names)
+            yield event.plain_result(
+                "图库列表：\n" + "\n".join(f"• {item}" for item in names)
+                if names
+                else "图库为空"
+            )
             return
         try:
             image_bytes, _mime = await asyncio.to_thread(

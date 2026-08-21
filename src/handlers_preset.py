@@ -22,7 +22,12 @@ async def handle_preset_list(plugin, event) -> AsyncIterator:
 async def handle_preset_view(plugin, event) -> AsyncIterator:
     args = event.message_str.removeprefix("nai预设查看").strip()
     if not args:
-        yield event.plain_result("请指定预设名称，例如：nai预设查看 猫娘")
+        presets = await asyncio.to_thread(plugin.preset_manager.list_presets)
+        if not presets:
+            yield event.plain_result("暂无预设，管理员可使用 nai预设添加 命令添加预设")
+            return
+        result = "预设列表：\n" + "\n".join(f"• {title}" for title in presets)
+        yield event.plain_result(result)
         return
 
     title = args.split()[0]
