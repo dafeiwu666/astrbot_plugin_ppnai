@@ -6,6 +6,9 @@
       "help_t2i": true,
       "merge_draw_to_chat_record": true,
       "send_generation_details": false,
+      "image_cache_enabled": false,
+      "image_cache_ttl_days": 7,
+      "image_cache_max_size_mb": 1024,
       "resource_admins": [],
       "list_all_resources": false
     },
@@ -30,6 +33,25 @@
         "hint": "默认关闭。开启后发送原始指令、最终正负向提示词、参数和预览图。",
         "title": "Send Generation Details",
         "type": "bool"
+      },
+      "image_cache_enabled": {
+        "default": false,
+        "description": "缓存 Vibe 输入原图和全部 AI 生成图片",
+        "hint": "默认关闭；缓存仅供管理和排查，不影响生图计费。",
+        "title": "Image Cache Enabled",
+        "type": "bool"
+      },
+      "image_cache_ttl_days": {
+        "default": 7,
+        "description": "图片缓存保留天数",
+        "title": "Image Cache TTL Days",
+        "type": "int"
+      },
+      "image_cache_max_size_mb": {
+        "default": 1024,
+        "description": "图片缓存最大容量（MB）",
+        "title": "Image Cache Max Size MB",
+        "type": "int"
       },
       "resource_admins": {
         "default": [],

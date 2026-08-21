@@ -22,6 +22,7 @@ from astrbot.api import logger
 
 from .config import Config
 from .models import Req
+from .image_history_cache import ImageHistoryCache
 
 from .text_sanitize import shorten_base64_segments
 
@@ -498,6 +499,8 @@ async def generate_image(
     start_time: int | None = None,
     token: str = "",
     vibe_cache: VibeCacheManager | None = None,
+    image_cache: ImageHistoryCache | None = None,
+    owner_id: str = "system",
 ) -> bytes:
     """
     调用官方 NovelAI API 生成图片
@@ -517,6 +520,16 @@ async def generate_image(
     references = parameters.get("reference_image_multiple") or []
     model = str(request_body.get("model", ""))
     if references:
+        if image_cache is not None:
+            for reference in references:
+                try:
+                    await asyncio.to_thread(
+                        image_cache.put_data_uri, "vibe_inputs", reference, owner_id
+                    )
+                except Exception:  # noqa: BLE001
+                    # Cache storage is optional external I/O; generation must remain usable
+                    # when the cache directory is unavailable, but the failure is visible.
+                    logger.exception("[nai] failed to cache vibe input image")
         info_extracts = parameters.get(
             "reference_information_extracted_multiple", []
         )
@@ -602,6 +615,8 @@ async def wrapped_generate(
     *,
     client_getter: Callable[[], Awaitable[AsyncClient]] | None = None,
     vibe_cache: VibeCacheManager | None = None,
+    image_cache: ImageHistoryCache | None = None,
+    owner_id: str = "system",
 ) -> bytes:
     """生成图片
     
@@ -635,6 +650,8 @@ async def wrapped_generate(
             start_time=start_time,
             token=token,
             vibe_cache=vibe_cache,
+            image_cache=image_cache,
+            owner_id=owner_id,
         )
     finally:
         if close_after:
@@ -644,4 +661,12 @@ async def wrapped_generate(
     logger.debug(f"[nai] {start_time} -> end ({consumed_time_s} s)")
     logger.info(f"[nai] 图片生成完成 ({consumed_time_s:.2f}s)")
     
+    if image_cache is not None:
+        try:
+            await asyncio.to_thread(
+                image_cache.put_bytes, "generations", image, owner_id
+            )
+        except Exception:  # noqa: BLE001
+            # The image has already been generated; a cache disk failure must not discard it.
+            logger.exception("[nai] failed to cache generated image")
     return image
