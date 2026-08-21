@@ -6,9 +6,13 @@ Extracted from main.py to keep Plugin wiring lightweight.
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections.abc import AsyncIterator
 
 from astrbot.api.message_components import Image, Node, Nodes, Plain
+
+from .image_io import resolve_image
+from .params import _collect_images_with_replies
 
 
 async def handle_preset_list(plugin, event) -> AsyncIterator:
@@ -93,8 +97,47 @@ async def handle_preset_add(plugin, event) -> AsyncIterator:
         content,
         plugin._get_resource_owner(event),
     )
+    images = _collect_images_with_replies(event.message_obj.message)
+    if images:
+        preview_data = await resolve_image(images[0])
+        encoded = preview_data.split(",", 1)[1]
+        await asyncio.to_thread(
+            plugin.preview_manager.save_or_replace,
+            [f"preset:{title}"],
+            base64.b64decode(encoded),
+        )
     preview = content[:200] + ("..." if len(content) > 200 else "")
     yield event.plain_result(f"✅ 预设 #{title} 添加成功！\n\n预览：\n{preview}")
+
+
+async def handle_preset_modify(plugin, event) -> AsyncIterator:
+    full_text = event.message_str
+    lines = full_text.split("\n", 1)
+    title = lines[0].removeprefix("nai预设修改").strip()
+    if not title:
+        yield event.plain_result("请指定预设标题和内容，格式：\nnai预设修改 标题名\n这里是新内容...")
+        return
+    if len(lines) < 2 or not lines[1].strip():
+        yield event.plain_result(f"请在标题后换行添加新内容：\nnai预设修改 {title}\n这里是新内容...")
+        return
+
+    owner_id = None if plugin._check_resource_admin(event) else plugin._get_resource_owner(event)
+    existing = await asyncio.to_thread(plugin.preset_manager.get_preset, title)
+    if existing is None or (owner_id is not None and existing.owner_id != owner_id):
+        yield event.plain_result(f"预设 #{title} 不存在或无权修改")
+        return
+
+    content = lines[1]
+    await asyncio.to_thread(plugin.preset_manager.update_preset, title, content)
+    images = _collect_images_with_replies(event.message_obj.message)
+    if images:
+        preview_data = await resolve_image(images[0])
+        await asyncio.to_thread(
+            plugin.preview_manager.save_or_replace,
+            [f"preset:{title}"],
+            base64.b64decode(preview_data.split(",", 1)[1]),
+        )
+    yield event.plain_result(f"✅ 预设 #{title} 修改成功")
 
 
 async def handle_preset_delete(plugin, event) -> AsyncIterator:

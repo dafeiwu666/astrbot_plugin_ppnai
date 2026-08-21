@@ -90,7 +90,9 @@ class PresetManager:
         self._save()
         return True
     
-    def update_preset(self, title: str, content: str) -> bool:
+    def update_preset(
+        self, title: str, content: str, owner_id: str | None = None
+    ) -> bool:
         """
         更新预设
         返回: True 表示更新成功，False 表示预设不存在
@@ -98,7 +100,12 @@ class PresetManager:
         store = self._load()
         if title not in store.presets:
             return False
-        store.presets[title] = Preset(title=title, content=content)
+        preset = store.presets[title]
+        if owner_id is not None and preset.owner_id != owner_id:
+            return False
+        store.presets[title] = Preset(
+            title=title, content=content, owner_id=preset.owner_id
+        )
         self._save()
         return True
     

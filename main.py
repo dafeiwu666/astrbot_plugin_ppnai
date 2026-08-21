@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import os
 import sys
 import types
@@ -20,7 +21,7 @@ from astrbot.api import logger
 from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter as event_filter
 from astrbot.api.provider import LLMResponse
-from astrbot.api.message_components import Image, Node, Nodes, Reply
+from astrbot.api.message_components import Image, Node, Nodes, Plain, Reply
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.astr_agent_context import AstrAgentContext
@@ -157,6 +158,7 @@ try:
         handle_preset_add,
         handle_preset_delete,
         handle_preset_list,
+        handle_preset_modify,
         handle_preset_view,
     )
 except Exception:  # noqa: BLE001
@@ -165,6 +167,7 @@ except Exception:  # noqa: BLE001
         handle_preset_add = _m.handle_preset_add
         handle_preset_delete = _m.handle_preset_delete
         handle_preset_list = _m.handle_preset_list
+        handle_preset_modify = _m.handle_preset_modify
         handle_preset_view = _m.handle_preset_view
     except Exception:  # noqa: BLE001
         logger.exception(
@@ -186,6 +189,7 @@ except Exception:  # noqa: BLE001
         handle_preset_add = _make_missing_preset_handler("handle_preset_add")
         handle_preset_delete = _make_missing_preset_handler("handle_preset_delete")
         handle_preset_list = _make_missing_preset_handler("handle_preset_list")
+        handle_preset_modify = _make_missing_preset_handler("handle_preset_modify")
         handle_preset_view = _make_missing_preset_handler("handle_preset_view")
 try:
     from .src.handlers_cs import (
@@ -1328,6 +1332,13 @@ class Plugin(Star):
                 overwrite=bool(pending["overwrite"]),
                 owner_id=self._get_resource_owner(event),
             )
+            if len(images) >= 2:
+                preview_data_uri = await resolve_image(images[1])
+                await asyncio.to_thread(
+                    self.preview_manager.save_or_replace,
+                    [f"image:{pending['name']}"],
+                    base64.b64decode(preview_data_uri.split(",", 1)[1]),
+                )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Image library upload failed")
             yield event.plain_result(f"图库图片保存失败：{format_readable_error(exc)}")
@@ -1352,6 +1363,12 @@ class Plugin(Star):
     async def cmd_preset_add(self, event: AstrMessageEvent):
         """添加预设（管理员）"""
         async for result in handle_preset_add(self, event):
+            yield result
+
+    @event_filter.command("nai预设修改")
+    async def cmd_preset_modify(self, event: AstrMessageEvent):
+        """修改预设（管理员或资源所有者）"""
+        async for result in handle_preset_modify(self, event):
             yield result
     
     @event_filter.command("nai预设删除")

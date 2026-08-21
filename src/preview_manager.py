@@ -70,6 +70,22 @@ class PreviewManager:
             self._save()
         return saved
 
+    def save_or_replace(self, resource_keys: list[str], image: bytes) -> None:
+        """Save a manually supplied preview, replacing an existing one."""
+        index = self._load()
+        self.image_dir.mkdir(parents=True, exist_ok=True)
+        for key in dict.fromkeys(resource_keys):
+            old_filename = index.get(key)
+            filename = self._filename(key)
+            path = self.image_dir / filename
+            path.write_bytes(image)
+            index[key] = filename
+            if old_filename and old_filename != filename:
+                old_path = self.image_dir / old_filename
+                if old_path.is_file():
+                    old_path.unlink()
+        self._save()
+
     def read(self, resource_key: str) -> bytes | None:
         filename = self._load().get(resource_key)
         if not filename:

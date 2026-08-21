@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections.abc import AsyncIterator
 
 from astrbot.api import logger
@@ -10,6 +11,20 @@ from astrbot.api.message_components import Image, Node, Nodes, Plain
 from astrbot.core.agent.message import Message
 
 from .character_keep_store import replace_nai_tag
+from .image_io import resolve_image
+from .params import _collect_images_with_replies
+
+
+async def _save_preview(plugin, event, resource_key: str) -> None:
+    images = _collect_images_with_replies(event.message_obj.message)
+    if not images:
+        return
+    data_uri = await resolve_image(images[0])
+    await asyncio.to_thread(
+        plugin.preview_manager.save_or_replace,
+        [resource_key],
+        base64.b64decode(data_uri.split(",", 1)[1]),
+    )
 
 
 def _split_lines_preserve(value: str) -> list[str]:
@@ -120,6 +135,8 @@ async def handle_cs(plugin, event) -> AsyncIterator:
         yield event.plain_result(f"保存失败：{e}")
         return
 
+    await _save_preview(plugin, event, f"ck:{user_id}:{name}")
+
     yield event.plain_result(f"✅ 角色保持 {name} 已保存")
 
 
@@ -212,6 +229,7 @@ async def handle_ccs(plugin, event) -> AsyncIterator:
     content = await asyncio.to_thread(plugin.cs_store.read, target_user, name)
     updated, replaced = replace_nai_tag(content, new_tag)
     await asyncio.to_thread(plugin.cs_store.write, target_user, name, updated, overwrite=True)
+    await _save_preview(plugin, event, f"ck:{target_user}:{name}")
 
     if replaced:
         yield event.plain_result(f"✅ 角色保持 {name} 已更新")
