@@ -42,9 +42,7 @@ from .models import (
     Req,
 )
 from .image_io import (
-    convert_to_jpeg_for_character_keep,
     resolve_image,
-    resolve_image_as_jpeg,
 )
 
 if TYPE_CHECKING:
