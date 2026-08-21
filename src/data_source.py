@@ -86,15 +86,15 @@ class GenerateError(Exception):
 
 
 class VibeCacheManager:
-    """Persistent cache for V4/V4.5 vibe encodings.
+    """Persistent cache for model-specific vibe encodings.
 
     The cache only avoids repeated calls to ``/ai/encode-vibe``. It never
     bypasses the plugin's image-generation quota accounting.
     """
 
     def __init__(self, data_dir: Path, ttl_days: int = 7) -> None:
-        self._data_file = data_dir / "vibe_encode_cache.json"
-        self._data_dir = data_dir
+        self._data_dir = data_dir / "vibe_cache"
+        self._data_file = self._data_dir / "vibe_encode_cache.json"
         self._ttl_days = ttl_days
         self._cache: dict[str, dict[str, object]] | None = None
         self._locks: dict[str, asyncio.Lock] = {}
@@ -455,7 +455,7 @@ async def _encode_vibe_token(
     model: str,
     token: str = "",
 ) -> str:
-    """Encode one V4/V4.5 reference image; failures remain fatal."""
+    """Encode one reference image; failures remain fatal."""
     response = await cli.post(
         "/ai/encode-vibe",
         json={
@@ -504,7 +504,7 @@ async def generate_image(
     parameters = request_body["parameters"]
     references = parameters.get("reference_image_multiple") or []
     model = str(request_body.get("model", ""))
-    if references and model.startswith("nai-diffusion-4"):
+    if references:
         info_extracts = parameters.get(
             "reference_information_extracted_multiple", []
         )
