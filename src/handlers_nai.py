@@ -455,7 +455,11 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
                     yield event.chain_result([nodes])
                 else:
                     yield event.chain_result([Image.fromBytes(img) for img in images])
-                if req.data if req.data is not None else plugin.config.general.send_generation_details:
+                if (
+                    req.data
+                    if req.data is not None
+                    else plugin.config.general.send_generation_details
+                ):
                     report = format_generation_report(
                         event.message_str.removeprefix("nai").strip(),
                         req,
