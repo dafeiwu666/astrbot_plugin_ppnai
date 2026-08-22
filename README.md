@@ -49,7 +49,7 @@
 | 配置项 | 说明 | 必填 |
 | :--- | :--- | :--- |
 | `general.merge_draw_to_chat_record` | 是否将画图结果合并为聊天记录（关闭后直接发送单张图片）。 | ❌ 否 |
-| `general.send_generation_details` | 是否在每次生成后发送完整参数记录；若有输入图片会一并发送。 | ❌ 否 |
+| `general.send_generation_details` | 默认是否输出完整参数记录；绘图指令中的 `data=true` 可单次开启。 | ❌ 否 |
 | `general.public_resources` | 预设、图库、角色保持(CS) 是否对所有人公开。 | ❌ 否 |
 | `general.allow_view_all` | 是否允许普通用户查看全部资源（用于保护隐私）。 | ❌ 否 |
 | `request.proxy_url` | 画图接口（如 image.novelai.net）的代理地址。非海外机器必填。支持 `http://`、`https://`、`socks5://` 等。 | ❌ 否 |
@@ -204,6 +204,7 @@ n=3
 | `vibe_transfer` `v_t` | 氛围转移 | 参考图片风格 |
 | `vibe_transfer_info_extract` `v_t_i_e` | 氛围转移信息提取度 | 0-1 |
 | `vibe_transfer_ref_strength` `v_t_r_s` | 氛围转移参考强度 | 0-1 |
+| `data` | 输出参数记录 | 可选 `true` / `false`；具体优先级见上方说明 |
 | `role` | 角色/多角色 | 多角色控制 |
 | `character_keep` `c_k` | 角色保持/ck | 保持角色特征 |
 | `character_keep_vibe` `c_k_v` | 角色保持氛围 | true/false |

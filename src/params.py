@@ -565,6 +565,21 @@ async def apply_i2i(value: str, data: dict[str, Any], images: list[Image], **_):
 
 
 @req_model_assembler.applier(
+    "data",
+    ["输出参数记录"],
+    lambda _: "是否输出参数聊天记录，可选值：`true` / `false`",
+)
+async def apply_data(value: str, data: dict[str, Any], **_):
+    value_lower = value.lower().strip()
+    if value_lower in ("true", "1", "on", "yes", "是"):
+        data["data"] = True
+    elif value_lower in ("false", "0", "off", "no", "否", "关"):
+        data["data"] = False
+    else:
+        raise ValueError(f"无效的值 `{value}`，请使用 true 或 false")
+
+
+@req_model_assembler.applier(
     "i2i_force",
     ["重绘力度", "i_f"],
     lambda ctx: f"小数，默认为 `{ctx.defaults.i2i_force}`",

@@ -48,7 +48,7 @@ class GeneralConfig(BaseModel):
         Field(
             description="发送完整参数记录",
             json_schema_extra={
-                "hint": "默认关闭。开启后每次生成完成都会以合并聊天记录发送原始指令、最终正负向提示词和完整参数；若使用输入图片，会一并发送输入图片。",
+                "hint": "默认关闭。开启后每次生成完成都会以合并聊天记录发送原始指令、最终正负向提示词和完整参数；绘图指令中的 data=true 也可单次开启。",
             },
         ),
     ] = False
