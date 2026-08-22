@@ -198,7 +198,7 @@ class Req(BaseModel):
     ] = AVAILABLE_DOTH[0]
     i2i_force: Annotated[str, Field(serialization_alias="i2iforce")] = "0.6"  # 重绘力度
     i2i_cl: Annotated[str, Field(serialization_alias="i2icl")] = "1"  # 图片处理
-    data: bool | None = Field(default=None, exclude=True)  # 是否输出参数记录
+    data: bool = Field(default=False, exclude=True)  # 是否输出参数记录
     addition: ReqAddition = ReqAddition()
     ch: bool = False
     nocache: int = 1

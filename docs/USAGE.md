@@ -401,14 +401,12 @@ character_keep=true
 
 ### 生成参数记录
 
-开启后，每次生成完成时，插件都会额外发送一条合并聊天记录，内容包括：
+在绘图指令中填写 `data=true` 后，插件会额外发送一条合并聊天记录，内容包括：
 - 原始指令
 - 最终正向和反向提示词
 - 最终模型、尺寸、步数、采样器、种子等参数
 - 使用的输入图片（若有）
-该功能默认关闭。
-
-也可以在单次绘图指令中使用 `data=true` 输出参数聊天记录，使用 `data=false` 覆盖配置并关闭本次输出。
+未填写 `data=true` 时不输出，且不受配置开关影响。
 
 ### 图片缓存
 
@@ -502,7 +500,7 @@ role=D2|1girl, cool|bad anatomy
 | `vibe_transfer` `v_t` | 氛围转移 | 参考图片风格 |
 | `vibe_transfer_info_extract` `v_t_i_e` | 氛围转移信息提取度 | 0-1 |
 | `vibe_transfer_ref_strength` `v_t_r_s` | 氛围转移参考强度 | 0-1 |
-| `data` | 输出参数记录 | `true` / `false`，控制本次是否输出参数聊天记录 |
+| `data` | 输出参数记录 | 填写 `true` 后输出本次参数聊天记录 |
 | `role` | 角色/多角色 | 多角色控制 |
 | `character_keep` `c_k` | 角色保持/ck | 保持角色特征 |
 | `character_keep_vibe` `c_k_v` | 角色保持氛围 | true/false |
