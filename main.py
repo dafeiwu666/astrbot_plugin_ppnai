@@ -1547,4 +1547,3 @@ class Plugin(Star):
     async def on_llm_response_auto_draw(self, event: AstrMessageEvent, resp: LLMResponse):
         """监听主 AI 回复，自动生成图片"""
         await handle_llm_response_auto_draw(self, event, resp)
-

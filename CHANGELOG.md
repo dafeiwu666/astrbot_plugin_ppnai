@@ -1,4 +1,8 @@
 # CHANGELOG
+## v1.6.5
+
+- 新增 `data=true/false` 单次控制是否输出参数聊天记录。
+
 ## v1.6.4
 - 修了bug
 ## v1.6.3

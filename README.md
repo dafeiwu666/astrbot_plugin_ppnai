@@ -204,6 +204,7 @@ n=3
 | `vibe_transfer` `v_t` | 氛围转移 | 参考图片风格 |
 | `vibe_transfer_info_extract` `v_t_i_e` | 氛围转移信息提取度 | 0-1 |
 | `vibe_transfer_ref_strength` `v_t_r_s` | 氛围转移参考强度 | 0-1 |
+| `data` | 输出参数记录 | `true` / `false`，控制本次是否输出参数聊天记录 |
 | `role` | 角色/多角色 | 多角色控制 |
 | `character_keep` `c_k` | 角色保持/ck | 保持角色特征 |
 | `character_keep_vibe` `c_k_v` | 角色保持氛围 | true/false |
