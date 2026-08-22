@@ -461,7 +461,10 @@ async def _auto_draw_generate(
                 else:
                     await event.send(event.chain_result([Image.fromBytes(img) for img in images]))
 
-                if last_req is not None and last_req.data:
+                if last_req is not None and (
+                    plugin.config.general.send_generation_details
+                    or last_req.data is True
+                ):
                     report = format_generation_report(
                         f"自动画图：{ai_response}", last_req
                     )

@@ -276,7 +276,10 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
                     yield event.chain_result([nodes])
                 else:
                     yield event.chain_result([Image.fromBytes(img) for img in images])
-                if last_req is not None and last_req.data:
+                if last_req is not None and (
+                    plugin.config.general.send_generation_details
+                    or last_req.data is True
+                ):
                     report = format_generation_report(
                         raw_input, last_req
                     )
@@ -448,7 +451,7 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
                     yield event.chain_result([nodes])
                 else:
                     yield event.chain_result([Image.fromBytes(img) for img in images])
-                if req.data:
+                if plugin.config.general.send_generation_details or req.data is True:
                     report = format_generation_report(
                         event.message_str.removeprefix("nai").strip(),
                         req,
