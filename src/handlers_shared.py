@@ -290,6 +290,8 @@ def apply_explicit_overrides(
         req.i2i_cl = user_req.i2i_cl
     if "artist" in explicit_ids:
         req.artist = user_req.artist
+    if "data" in explicit_ids:
+        req.data = user_req.data
 
     if (
         "character_keep" in explicit_ids
