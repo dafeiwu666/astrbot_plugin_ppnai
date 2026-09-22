@@ -85,11 +85,15 @@ async def _apply_curtain(plugin: Any, event: Any, images: list[bytes]) -> list[b
     return result
 
 
-async def _send_optional_outputs(plugin: Any, event: Any, images: list[bytes]):
+async def _build_optional_output_content(
+    plugin: Any, event: Any, images: list[bytes]
+) -> list[Any]:
     qr_requested = plugin.config.general.send_qr or _flag(event, "QR")
     quark_requested = plugin.config.general.send_quark_link or _flag(event, "QK")
     if not qr_requested and not quark_requested:
-        return
+        return []
+
+    content: list[Any] = []
 
     if qr_requested:
         # QR is independent from Quark and uses a public image-hosting URL.
@@ -97,8 +101,7 @@ async def _send_optional_outputs(plugin: Any, event: Any, images: list[bytes]):
         qr_images = await asyncio.gather(
             *(asyncio.to_thread(build_qr_image, url) for url in qr_urls)
         )
-        if qr_images:
-            yield event.chain_result([Image.fromBytes(qr) for qr in qr_images])
+        content.extend(Image.fromBytes(qr) for qr in qr_images)
     if quark_requested:
         urls = await upload_images_to_quark(
             plugin,
@@ -106,13 +109,14 @@ async def _send_optional_outputs(plugin: Any, event: Any, images: list[bytes]):
             force=_flag(event, "QK"),
         )
         if not urls:
-            yield event.plain_result(
+            content.append(Plain(
                 "夸克网盘尚未完成配置或登录，请管理员查看 AstrBot 日志中的二维码，"
                 "使用夸克 APP 扫码登录后再试。"
-            )
+            ))
         result = build_quark_result(event, urls)
         if result is not None:
-            yield result
+            content.append(Plain("夸克分享链接：\n" + "\n".join(urls)))
+    return content
 
 
 def _strip_image_param_lines(raw_params: str) -> str:
@@ -366,24 +370,22 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
                 await plugin.user_manager.arecord_successful_draw(
                     user_id, len(images), event.get_sender_name()
                 )
+                optional_content = await _build_optional_output_content(plugin, event, images)
                 sender_id = event.get_sender_id()
                 sender_name = event.get_sender_name()
                 if plugin.config.general.merge_draw_to_chat_record:
                     nodes = Nodes(
-                        [
-                            Node(
-                                uin=sender_id,
-                                name=sender_name,
-                                content=[Image.fromBytes(img)],
-                            )
-                            for img in images
-                        ]
+                        [Node(
+                            uin=sender_id,
+                            name=sender_name,
+                            content=[Image.fromBytes(img) for img in images] + optional_content,
+                        )]
                     )
                     yield event.chain_result([nodes])
                 else:
                     yield event.chain_result([Image.fromBytes(img) for img in images])
-                async for result in _send_optional_outputs(plugin, event, images):
-                    yield result
+                    if optional_content:
+                        yield event.chain_result(optional_content)
                 reaction_result = build_draw_reaction_result(plugin, event)
                 if reaction_result is not None:
                     yield reaction_result
@@ -556,6 +558,7 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
                 await plugin.user_manager.arecord_successful_draw(
                     user_id, len(images), event.get_sender_name()
                 )
+                optional_content = await _build_optional_output_content(plugin, event, images)
                 sender_id = event.get_sender_id()
                 sender_name = event.get_sender_name()
                 if plugin.config.general.merge_draw_to_chat_record:
@@ -563,15 +566,14 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
                         Node(
                             uin=sender_id,
                             name=sender_name,
-                            content=[Image.fromBytes(img)],
+                            content=[Image.fromBytes(img) for img in images] + optional_content,
                         )
-                        for img in images
                     ])
                     yield event.chain_result([nodes])
                 else:
                     yield event.chain_result([Image.fromBytes(img) for img in images])
-                async for result in _send_optional_outputs(plugin, event, images):
-                    yield result
+                    if optional_content:
+                        yield event.chain_result(optional_content)
                 reaction_result = build_draw_reaction_result(plugin, event)
                 if reaction_result is not None:
                     yield reaction_result

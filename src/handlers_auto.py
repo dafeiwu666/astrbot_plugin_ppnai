@@ -21,7 +21,11 @@ from .handlers_shared import (
     merge_nai_params,
 )
 from .queue_flow import QueueRejected, acquire_generation_semaphore, reserve_queue
-from .handlers_nai import _apply_curtain, _send_optional_outputs, build_draw_reaction_result
+from .handlers_nai import (
+    _apply_curtain,
+    _build_optional_output_content,
+    build_draw_reaction_result,
+)
 from .anlas_audit import read_balance, record_generation
 
 
@@ -456,6 +460,7 @@ async def _auto_draw_generate(
                 await plugin.user_manager.arecord_successful_draw(
                     opener_user_id, len(images), event.get_sender_name()
                 )
+                optional_content = await _build_optional_output_content(plugin, event, images)
                 sender_id = event.get_sender_id()
                 sender_name = event.get_sender_name()
                 if plugin.config.general.merge_draw_to_chat_record:
@@ -463,16 +468,14 @@ async def _auto_draw_generate(
                         Node(
                             uin=sender_id,
                             name=sender_name,
-                            content=[Image.fromBytes(img)],
+                            content=[Image.fromBytes(img) for img in images] + optional_content,
                         )
-                        for img in images
                     ])
                     await event.send(event.chain_result([nodes]))
                 else:
                     await event.send(event.chain_result([Image.fromBytes(img) for img in images]))
-
-                async for result in _send_optional_outputs(plugin, event, images):
-                    await event.send(result)
+                    if optional_content:
+                        await event.send(event.chain_result(optional_content))
                 reaction_result = build_draw_reaction_result(plugin, event)
                 if reaction_result is not None:
                     await event.send(reaction_result)
