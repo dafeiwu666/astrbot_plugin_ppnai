@@ -27,7 +27,7 @@ from .handlers_shared import (
 from .queue_flow import QueueRejected, acquire_generation_semaphore, reserve_queue
 from .curtain import compose_curtain
 from .qr_code import build_qr_image
-from .catbox import upload_images_to_catbox
+from .sharebin import upload_images_to_sharebin
 from .quark import build_quark_result, upload_images_to_quark
 from .anlas_audit import read_balance, record_generation
 
@@ -92,8 +92,8 @@ async def _send_optional_outputs(plugin: Any, event: Any, images: list[bytes]):
         return
 
     if qr_requested:
-        # QR is independent from Quark: Catbox provides a public URL without login.
-        qr_urls = await upload_images_to_catbox(plugin, images)
+        # QR is independent from Quark and uses a public image-hosting URL.
+        qr_urls = await upload_images_to_sharebin(plugin, images)
         qr_images = await asyncio.gather(
             *(asyncio.to_thread(build_qr_image, url) for url in qr_urls)
         )
