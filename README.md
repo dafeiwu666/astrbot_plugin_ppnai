@@ -69,6 +69,8 @@
 | `quota.enable_quota` | 是否启用额度/签到系统。 | ❌ 否 |
 | `quota.max_batch_n` | 单次批量生成（n参数）的最大上限限制。 | ❌ 否 |
 
+> **夸克登录注意事项：** 首次启用 `general.send_quark_link`，或检测不到夸克 Cookie 时，插件会在 AstrBot 日志中输出夸克登录二维码。请使用夸克 APP 扫码登录；登录成功后插件会自动保存登录凭证，之后无需重复扫码。若登录凭证失效，插件会再次在日志中输出二维码。
+
 ## 📁 插件数据目录结构
 
 插件的所有数据默认存储在 `AstrBot/data/plugin_data/astrbot_plugin_ppnai/` 目录下：
