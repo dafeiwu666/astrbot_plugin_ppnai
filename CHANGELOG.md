@@ -1,4 +1,8 @@
 # CHANGELOG
+## v1.6.7
+- 修复nai画图无法查看data的bug
+- 更详细的帮助菜单
+
 ## v1.6.5
 
 - `data=true` 可在配置关闭时单次开启参数聊天记录；配置开启时 `data=false` 不能屏蔽输出。
