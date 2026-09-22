@@ -96,7 +96,7 @@ from .src.image_history_cache import ImageHistoryCache
 from .src.queue_manager import get_shared_queue
 from .src.handlers_nai import handle_cmd_nai, handle_nai_draw
 from .src.curtain import CurtainStore
-from .src.quark import quark_cleanup_loop
+from .src.quark import announce_quark_login, quark_cleanup_loop
 try:
     from .src.handlers_admin import (
         handle_add_blacklist,
@@ -627,7 +627,8 @@ class Plugin(Star):
             await asyncio.to_thread(self.image_history_cache.cleanup)
         except Exception:  # noqa: BLE001
             logger.exception("Failed to clean up image history cache")
-        if self.config.quark.enabled:
+        if self.config.general.send_quark_link:
+            await announce_quark_login(self)
             self._create_background_task(quark_cleanup_loop(self), name="nai:quark_cleanup")
 
         # 避免在事件循环中做同步文件 I/O

@@ -1,4 +1,4 @@
-"""Optional QK=true Quark upload and expiring cleanup."""
+"""Quark upload, login QR guidance, and expiring cleanup."""
 from __future__ import annotations
 
 import asyncio
@@ -14,8 +14,13 @@ from astrbot.api.message_components import Plain
 from astrbot.core.star.star_tools import StarTools
 
 from ._vendor.quark_client import QuarkClient
+from ._vendor.quark_client.auth.api_login import APILogin
 
 _NAME = "astrbot_plugin_ppnai"
+
+
+def _cookie_path() -> Path:
+    return _data_dir() / "quark" / "session.cookie"
 
 
 def _data_dir() -> Path:
@@ -61,17 +66,19 @@ def _upload_sync(cookie: str, image: bytes, filename: str, parent: str, expires:
             temp_path.unlink(missing_ok=True)
 
 
-async def upload_images_to_quark(plugin, images: Sequence[bytes]) -> list[str]:
+async def upload_images_to_quark(
+    plugin, images: Sequence[bytes], force: bool = False
+) -> list[str]:
     config = getattr(plugin.config, "quark", None)
-    if config is None or not config.enabled or not images:
+    if config is None or not (plugin.config.general.send_quark_link or force) or not images:
         return []
-    cookie_path = _data_dir() / "quark" / "session.cookie"
     try:
-        cookie = cookie_path.read_text(encoding="utf-8").strip()
+        cookie = _cookie_path().read_text(encoding="utf-8").strip()
         if not cookie:
             raise RuntimeError("session unavailable")
     except Exception:
-        logger.warning("[ppnai] Quark cookie unavailable")
+        logger.warning("[ppnai] Quark cookie unavailable; login QR will be logged")
+        await announce_quark_login(plugin)
         return []
     expires = int((time.time() + config.link_expiry_minutes * 60) * 1000)
     urls = []
@@ -96,9 +103,9 @@ def build_quark_result(event, urls: Sequence[str]):
 
 async def quark_cleanup_loop(plugin) -> None:
     while True:
-        if plugin.config.quark.delete_after_expiry:
+        if plugin.config.general.send_quark_link and plugin.config.quark.delete_after_expiry:
             try:
-                cookie = (_data_dir() / "quark" / "session.cookie").read_text(encoding="utf-8").strip()
+                cookie = _cookie_path().read_text(encoding="utf-8").strip()
                 records = await asyncio.to_thread(_load_registry)
                 due = [item for item in records if item.get("delete_after", float("inf")) <= time.time()]
                 pending = [item for item in records if item not in due]
@@ -115,3 +122,48 @@ async def quark_cleanup_loop(plugin) -> None:
             except Exception as exc:
                 logger.warning("[ppnai] Quark cleanup unavailable: %s", type(exc).__name__)
         await asyncio.sleep(max(300, int(plugin.config.quark.cleanup_interval_minutes) * 60))
+
+
+def _ascii_qr(value: str) -> str:
+    import qrcode
+
+    qr = qrcode.QRCode(border=1)
+    qr.add_data(value)
+    qr.make(fit=True)
+    matrix = qr.get_matrix()
+    return "\n".join("".join("██" if cell else "  " for cell in row) for row in matrix)
+
+
+def _login_and_save_cookie() -> str:
+    login = APILogin(timeout=300)
+    token, url = login.get_qr_code()
+    logger.info("[ppnai] 未配置夸克 Cookie，请使用夸克 APP 扫描以下二维码登录：\n%s\n登录链接：%s", _ascii_qr(url), url)
+    if not login.wait_for_login(token):
+        raise RuntimeError("Quark QR login timed out or failed")
+    cookies = "; ".join(
+        f"{cookie.name}={cookie.value}"
+        for cookie in login.client.cookies.jar
+        if cookie.domain and "quark.cn" in cookie.domain
+    )
+    if not cookies:
+        raise RuntimeError("Quark login returned no cookies")
+    path = _cookie_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(cookies, encoding="utf-8")
+    logger.info("[ppnai] 夸克登录成功，Cookie 已保存")
+    return cookies
+
+
+async def announce_quark_login(plugin) -> None:
+    """Log a login QR once while sharing is enabled and no cookie exists."""
+    if not plugin.config.general.send_quark_link:
+        return
+    path = _cookie_path()
+    if path.is_file() and path.read_text(encoding="utf-8").strip():
+        return
+    task = getattr(plugin, "_quark_login_task", None)
+    if task is not None and not task.done():
+        return
+    plugin._quark_login_task = plugin._create_background_task(
+        asyncio.to_thread(_login_and_save_cookie), name="nai:quark_login"
+    )

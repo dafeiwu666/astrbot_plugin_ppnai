@@ -85,11 +85,11 @@ async def _apply_curtain(plugin: Any, event: Any, images: list[bytes]) -> list[b
 
 
 async def _send_optional_outputs(plugin: Any, event: Any, images: list[bytes]):
-    if _flag(event, "QR"):
+    if plugin.config.general.send_qr or _flag(event, "QR"):
         qr_images = [qr for image in images for qr in build_qr_images(image)]
         yield event.chain_result([Image.fromBytes(qr) for qr in qr_images])
-    if _flag(event, "QK"):
-        urls = await upload_images_to_quark(plugin, images)
+    if plugin.config.general.send_quark_link or _flag(event, "QK"):
+        urls = await upload_images_to_quark(plugin, images, force=_flag(event, "QK"))
         result = build_quark_result(event, urls)
         if result is not None:
             yield result

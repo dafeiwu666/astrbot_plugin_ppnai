@@ -572,9 +572,9 @@ character_keep=true
 - 配置开启且 `data=false`：仍输出（配置开启优先）
 - 配置关闭且未填写 `data` 或 `data=false`：不输出
 
-### 二维码输出 `QR=true`
+### 发送二维码
 
-`QR=true` 是单次绘图参数，与 `data=true` 同级，生成完成后额外发送二维码：
+在通用设置中开启 `general.send_qr=true` 后，每次生成完成会额外发送二维码；即使配置关闭，也可以用 `QR=true` 对单次请求开启：
 
 ```
 nai
@@ -584,9 +584,9 @@ QR=true
 
 由于普通二维码无法容纳完整 PNG，插件会自动把图片编码为带序号的分片二维码。批量生成或大图可能会发送多张二维码，需要按二维码中的序号顺序拼接内容后再恢复图片。
 
-### 夸克网盘分享 `QK=true`
+### 发送夸克网盘分享链接
 
-`QK=true` 是单次绘图参数，生成完成后额外上传图片到夸克网盘并发送公开分享链接：
+在通用设置中开启 `general.send_quark_link=true` 后，每次生成完成会额外上传图片到夸克网盘并发送公开分享链接；即使配置关闭，也可以用 `QK=true` 对单次请求开启：
 
 ```
 nai
@@ -596,8 +596,8 @@ QK=true
 
 使用前需要：
 
-1. 在配置中开启 `quark.enabled=true`。
-2. 将夸克 Cookie 保存到 `AstrBot/data/plugin_data/astrbot_plugin_ppnai/quark/session.cookie`。
+1. 开启 `general.send_quark_link`。
+2. 首次启用或 Cookie 缺失时，插件会在 AstrBot 日志输出夸克登录二维码，使用夸克 APP 扫码即可。
 3. 根据需要设置 `quark.link_expiry_minutes`、`quark.parent_folder_id` 和 `quark.delete_after_expiry`。
 
 夸克链接会作为生成后的独立附加消息发送，不会替代原图；批量生成时每张图片都会尝试上传并输出对应链接。开启自动删除后，插件只会删除自己登记的上传文件。
@@ -728,8 +728,8 @@ role=D2|1girl, cool|bad anatomy
 | `vibe_transfer_info_extract` `v_t_i_e` | 氛围转移信息提取度 | 0-1 |
 | `vibe_transfer_ref_strength` `v_t_r_s` | 氛围转移参考强度 | 0-1 |
 | `data` | 输出参数记录 | 可选 `true` / `false`；具体优先级见上方说明 |
-| `QR` | 输出图片二维码 | `QR=true`；大图会拆分为多张带序号的二维码 |
-| `QK` | 上传并分享夸克网盘链接 | `QK=true`；需开启 `quark.enabled` 并配置 Cookie |
+| `QR` | 输出图片二维码 | `QR=true` 可单次开启；大图会拆分为多张带序号的二维码 |
+| `QK` | 上传并分享夸克网盘链接 | `QK=true` 可单次开启；需完成夸克扫码登录 |
 | `role` | 角色/多角色 | 多角色控制 |
 | `character_keep` `c_k` | 角色保持/ck | 保持角色特征 |
 | `character_keep_vibe` `c_k_v` | 角色保持氛围 | true/false |

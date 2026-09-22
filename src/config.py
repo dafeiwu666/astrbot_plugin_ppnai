@@ -52,6 +52,14 @@ class GeneralConfig(BaseModel):
             },
         ),
     ] = False
+    send_quark_link: Annotated[
+        bool,
+        Field(description="出图后发送夸克网盘分享链接"),
+    ] = False
+    send_qr: Annotated[
+        bool,
+        Field(description="出图后发送图片二维码"),
+    ] = False
     vibe_image_cache_enabled: Annotated[
         bool,
         Field(
@@ -299,7 +307,6 @@ class ReactionConfig(BaseModel):
 
 
 class QuarkConfig(BaseModel):
-    enabled: Annotated[bool, Field(description="启用 QK=true 夸克网盘分享")] = False
     link_expiry_minutes: Annotated[int, Field(description="夸克分享链接有效分钟数", ge=1, le=43200)] = 1440
     delete_after_expiry: Annotated[bool, Field(description="链接到期后自动删除上传图片")] = False
     cleanup_interval_minutes: Annotated[int, Field(description="过期图片检查间隔（分钟）", ge=5, le=1440)] = 15

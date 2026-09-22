@@ -6,6 +6,8 @@
       "help_t2i": true,
       "merge_draw_to_chat_record": true,
       "send_generation_details": false,
+      "send_quark_link": false,
+      "send_qr": false,
       "vibe_image_cache_enabled": true,
       "image_cache_enabled": false,
       "image_cache_ttl_days": 7,
@@ -33,6 +35,18 @@
         "description": "发送完整参数记录",
         "hint": "默认关闭。开启后每次生成完成都会以合并聊天记录发送原始指令、最终正负向提示词和完整参数；绘图指令中的 data=true 也可单次开启。",
         "title": "Send Generation Details",
+        "type": "bool"
+      },
+      "send_quark_link": {
+        "default": false,
+        "description": "出图后发送夸克网盘分享链接",
+        "title": "Send Quark Link",
+        "type": "bool"
+      },
+      "send_qr": {
+        "default": false,
+        "description": "出图后发送图片二维码",
+        "title": "Send QR",
         "type": "bool"
       },
       "vibe_image_cache_enabled": {
@@ -612,10 +626,9 @@
   "quark": {
     "title": "QuarkConfig",
     "type": "object",
-    "default": {"enabled": false, "link_expiry_minutes": 1440, "delete_after_expiry": false, "cleanup_interval_minutes": 15, "parent_folder_id": "0"},
+    "default": {"link_expiry_minutes": 1440, "delete_after_expiry": false, "cleanup_interval_minutes": 15, "parent_folder_id": "0"},
     "description": "夸克网盘分享链接",
     "items": {
-      "enabled": {"default": false, "description": "启用 QK=true 夸克网盘分享", "title": "Enabled", "type": "bool"},
       "link_expiry_minutes": {"default": 1440, "description": "夸克分享链接有效分钟数", "minimum": 1, "maximum": 43200, "title": "Link Expiry Minutes", "type": "int"},
       "delete_after_expiry": {"default": false, "description": "链接到期后自动删除上传图片", "title": "Delete After Expiry", "type": "bool"},
       "cleanup_interval_minutes": {"default": 15, "description": "过期图片检查间隔（分钟）", "minimum": 5, "maximum": 1440, "title": "Cleanup Interval Minutes", "type": "int"},
