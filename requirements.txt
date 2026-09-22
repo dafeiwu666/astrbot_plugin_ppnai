@@ -5,5 +5,5 @@ jsonref>=1.1.0
 pillowmd>=0.7.0
 socksio>=1.0.0
 qrcode==8.2
-numpy==2.4.3
+numpy>=1.20.0
 Pillow>=10.0.0
