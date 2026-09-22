@@ -131,7 +131,16 @@ def _ascii_qr(value: str) -> str:
     qr.add_data(value)
     qr.make(fit=True)
     matrix = qr.get_matrix()
-    return "\n".join("".join("██" if cell else "  " for cell in row) for row in matrix)
+    lines = []
+    for row_index in range(0, len(matrix), 2):
+        upper = matrix[row_index]
+        lower = matrix[row_index + 1] if row_index + 1 < len(matrix) else [False] * len(upper)
+        line = "".join(
+            "█" if top and bottom else "▀" if top else "▄" if bottom else " "
+            for top, bottom in zip(upper, lower)
+        )
+        lines.append(line.rstrip())
+    return "\n".join(lines)
 
 
 def _login_and_save_cookie() -> str:
