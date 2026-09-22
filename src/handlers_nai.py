@@ -27,6 +27,7 @@ from .handlers_shared import (
 from .queue_flow import QueueRejected, acquire_generation_semaphore, reserve_queue
 from .curtain import compose_curtain
 from .qr_code import build_qr_image
+from .catbox import upload_images_to_catbox
 from .quark import build_quark_result, upload_images_to_quark
 from .anlas_audit import read_balance, record_generation
 
@@ -90,19 +91,20 @@ async def _send_optional_outputs(plugin: Any, event: Any, images: list[bytes]):
     if not qr_requested and not quark_requested:
         return
 
-    # Encode the share URL instead of the whole PNG. This keeps one QR image
-    # per generated image and avoids blocking the event loop with huge payloads.
-    urls = await upload_images_to_quark(
-        plugin,
-        images,
-        force=qr_requested or _flag(event, "QK"),
-    )
-    if qr_requested and urls:
+    if qr_requested:
+        # QR is independent from Quark: Catbox provides a public URL without login.
+        qr_urls = await upload_images_to_catbox(plugin, images)
         qr_images = await asyncio.gather(
-            *(asyncio.to_thread(build_qr_image, url) for url in urls)
+            *(asyncio.to_thread(build_qr_image, url) for url in qr_urls)
         )
-        yield event.chain_result([Image.fromBytes(qr) for qr in qr_images])
+        if qr_images:
+            yield event.chain_result([Image.fromBytes(qr) for qr in qr_images])
     if quark_requested:
+        urls = await upload_images_to_quark(
+            plugin,
+            images,
+            force=_flag(event, "QK"),
+        )
         result = build_quark_result(event, urls)
         if result is not None:
             yield result
