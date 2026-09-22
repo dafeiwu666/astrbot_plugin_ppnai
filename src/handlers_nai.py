@@ -105,6 +105,11 @@ async def _send_optional_outputs(plugin: Any, event: Any, images: list[bytes]):
             images,
             force=_flag(event, "QK"),
         )
+        if not urls:
+            yield event.plain_result(
+                "夸克网盘尚未完成配置或登录，请管理员查看 AstrBot 日志中的二维码，"
+                "使用夸克 APP 扫码登录后再试。"
+            )
         result = build_quark_result(event, urls)
         if result is not None:
             yield result
