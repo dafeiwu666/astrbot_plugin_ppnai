@@ -78,7 +78,7 @@ async def upload_images_to_quark(
             raise RuntimeError("session unavailable")
     except Exception:
         logger.warning("[ppnai] Quark cookie unavailable; login QR will be logged")
-        await announce_quark_login(plugin)
+        await announce_quark_login(plugin, force=True)
         return []
     expires = int((time.time() + config.link_expiry_minutes * 60) * 1000)
     urls = []
@@ -163,9 +163,9 @@ def _login_and_save_cookie() -> str:
     return cookies
 
 
-async def announce_quark_login(plugin) -> None:
+async def announce_quark_login(plugin, force: bool = False) -> None:
     """Log a login QR once while sharing is enabled and no cookie exists."""
-    if not plugin.config.general.send_quark_link:
+    if not (plugin.config.general.send_quark_link or force):
         return
     path = _cookie_path()
     if path.is_file() and path.read_text(encoding="utf-8").strip():
