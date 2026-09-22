@@ -371,6 +371,19 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
                     user_id, len(images), event.get_sender_name()
                 )
                 optional_content = await _build_optional_output_content(plugin, event, images)
+                merged_content = [Image.fromBytes(img) for img in images] + optional_content
+                report_content = None
+                if last_req is not None and (
+                    plugin.config.general.send_generation_details
+                    or last_req.data is True
+                ):
+                    report_content = [Plain(format_generation_report(raw_input, last_req))]
+                    report_content.extend(
+                        Image.fromBytes(image)
+                        for image in get_input_image_bytes(last_req)
+                    )
+                    if plugin.config.general.merge_draw_to_chat_record:
+                        merged_content.extend(report_content)
                 sender_id = event.get_sender_id()
                 sender_name = event.get_sender_name()
                 if plugin.config.general.merge_draw_to_chat_record:
@@ -378,7 +391,7 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
                         [Node(
                             uin=sender_id,
                             name=sender_name,
-                            content=[Image.fromBytes(img) for img in images] + optional_content,
+                            content=merged_content,
                         )]
                     )
                     yield event.chain_result([nodes])
@@ -389,18 +402,7 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
                 reaction_result = build_draw_reaction_result(plugin, event)
                 if reaction_result is not None:
                     yield reaction_result
-                if last_req is not None and (
-                    plugin.config.general.send_generation_details
-                    or last_req.data is True
-                ):
-                    report = format_generation_report(
-                        raw_input, last_req
-                    )
-                    report_content = [Plain(report)]
-                    report_content.extend(
-                        Image.fromBytes(image)
-                        for image in get_input_image_bytes(last_req)
-                    )
+                if report_content is not None and not plugin.config.general.merge_draw_to_chat_record:
                     yield event.chain_result([
                         Nodes([
                             Node(
