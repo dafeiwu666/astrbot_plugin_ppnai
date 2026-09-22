@@ -266,6 +266,7 @@ class LLMConfig(BaseModel):
         ),
     ] = False
 
+
     vision_image_limit: Annotated[
         int,
         Field(
@@ -284,6 +285,34 @@ class LLMConfig(BaseModel):
             json_schema_extra={"_special": "select_provider"},
         ),
     ] = ""
+
+
+class ReactionConfig(BaseModel):
+    enabled: Annotated[bool, Field(description="出图后发送随机短评")] = True
+    sticker_enabled: Annotated[bool, Field(description="出图后随机附带表情包")] = False
+    sticker_probability: Annotated[float, Field(description="表情包发送概率", ge=0, le=1)] = 0.35
+    cooldown_seconds: Annotated[int, Field(description="自动反馈冷却时间（秒）", ge=0, le=86400)] = 30
+    comments: Annotated[str, Field(description="出图后随机短评列表", json_schema_extra={"type": "text", "hint": "每行一句；留空时不发送短评。"})] = """呵呵，画从梦的另一端飘过来了。
+完成了，慢慢看吧。
+这张没有迷失在虚无里呢。
+画面已经落定，收好它吧。"""
+
+
+class QuarkConfig(BaseModel):
+    enabled: Annotated[bool, Field(description="启用 QK=true 夸克网盘分享")] = False
+    link_expiry_minutes: Annotated[int, Field(description="夸克分享链接有效分钟数", ge=1, le=43200)] = 1440
+    delete_after_expiry: Annotated[bool, Field(description="链接到期后自动删除上传图片")] = False
+    cleanup_interval_minutes: Annotated[int, Field(description="过期图片检查间隔（分钟）", ge=5, le=1440)] = 15
+    parent_folder_id: Annotated[str, Field(description="夸克网盘目标目录 ID；0 表示根目录")] = "0"
+
+
+class CurtainConfig(BaseModel):
+    enabled: Annotated[bool, Field(description="启用帷幕幻影坦克功能")] = True
+    max_image_mb: Annotated[int, Field(description="帷幕图最大体积（MB）", ge=1, le=100)] = 10
+    default_mode: Annotated[str, Field(description="默认帷幕模式（color 或 gray）")] = "color"
+    color_a: Annotated[float, Field(description="彩色模式亮度缩放", ge=0.1, le=3.0)] = 0.30
+    color_b: Annotated[float, Field(description="彩色模式亮度偏移", ge=-50, le=50)] = -20.0
+    color_weight: Annotated[float, Field(description="彩色模式颜色权重", ge=0.0, le=1.0)] = 0.45
 
 
 
@@ -511,6 +540,7 @@ class Config(BaseModel):
         GeneralConfig,
         Field(description="通用设置"),
     ] = GeneralConfig()
+    reaction: Annotated[ReactionConfig, Field(description="出图反馈")] = ReactionConfig()
     request: Annotated[
         RequestConfig,
         Field(description="请求设置"),
@@ -527,6 +557,8 @@ class Config(BaseModel):
         QuotaConfig,
         Field(description="额度设置"),
     ] = QuotaConfig()
+    curtain: Annotated[CurtainConfig, Field(description="帷幕幻影坦克设置")] = CurtainConfig()
+    quark: Annotated[QuarkConfig, Field(description="夸克网盘分享链接")] = QuarkConfig()
 
     defaults: Annotated[
         DefaultsConfig,

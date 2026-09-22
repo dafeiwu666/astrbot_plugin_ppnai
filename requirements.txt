@@ -4,3 +4,6 @@ cookit[pydantic]>=0.13.3
 jsonref>=1.1.0
 pillowmd>=0.7.0
 socksio>=1.0.0
+qrcode==8.2
+numpy==2.4.3
+Pillow>=10.0.0

@@ -26,6 +26,7 @@ from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.astr_agent_context import AstrAgentContext
 from astrbot.core.agent.tool import ToolExecResult
+from astrbot.core.utils.session_waiter import session_waiter, SessionController, SessionFilter
 
 
 def _load_src_module(module_basename: str):
@@ -94,6 +95,8 @@ from .src.image_library import ImageLibraryManager, LibraryImage
 from .src.image_history_cache import ImageHistoryCache
 from .src.queue_manager import get_shared_queue
 from .src.handlers_nai import handle_cmd_nai, handle_nai_draw
+from .src.curtain import CurtainStore
+from .src.quark import quark_cleanup_loop
 try:
     from .src.handlers_admin import (
         handle_add_blacklist,
@@ -108,6 +111,8 @@ try:
         handle_remove_blacklist,
         handle_remove_whitelist,
         handle_set_quota,
+        handle_nai_accounts,
+        handle_anlas_audit,
     )
 except Exception:  # noqa: BLE001
     try:
@@ -124,6 +129,8 @@ except Exception:  # noqa: BLE001
         handle_remove_blacklist = _m.handle_remove_blacklist
         handle_remove_whitelist = _m.handle_remove_whitelist
         handle_set_quota = _m.handle_set_quota
+        handle_nai_accounts = _m.handle_nai_accounts
+        handle_anlas_audit = _m.handle_anlas_audit
     except Exception:  # noqa: BLE001
         logger.exception(
             "Failed to import admin handlers module (.src.handlers_admin). "
@@ -153,6 +160,8 @@ except Exception:  # noqa: BLE001
         handle_add_quota = _make_missing_admin_handler("handle_add_quota")
         handle_set_quota = _make_missing_admin_handler("handle_set_quota")
         handle_admin_query_user = _make_missing_admin_handler("handle_admin_query_user")
+        handle_nai_accounts = _make_missing_admin_handler("handle_nai_accounts")
+        handle_anlas_audit = _make_missing_admin_handler("handle_anlas_audit")
 try:
     from .src.handlers_preset import (
         handle_preset_add,
@@ -523,6 +532,14 @@ class STNaiGenerateImageTool(ConfigNeededTool):
         return "Image successfully sent"
 
 
+class _CurtainSessionFilter(SessionFilter):
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+
+    async def filter(self, event: AstrMessageEvent) -> bool:
+        return event.get_session_id() == self.session_id
+
+
 class Plugin(Star):
     """使用指令 nai 查看详细帮助"""
 
@@ -547,6 +564,7 @@ class Plugin(Star):
         cs_dir = data_dir / "cs"
         cssaying_path = Path(__file__).parent / "src" / "prompts" / "cssaying.txt"
         self.cs_store = CharacterKeepStore(cs_dir, cssaying_path)
+        self.curtain_store = CurtainStore(data_dir, max_bytes=self.config.curtain.max_image_mb * 1024 * 1024)
 
         self._auto_draw_store = AutoDrawStoreManager(data_dir)
         self.vibe_cache_manager = VibeCacheManager(data_dir)
@@ -609,6 +627,8 @@ class Plugin(Star):
             await asyncio.to_thread(self.image_history_cache.cleanup)
         except Exception:  # noqa: BLE001
             logger.exception("Failed to clean up image history cache")
+        if self.config.quark.enabled:
+            self._create_background_task(quark_cleanup_loop(self), name="nai:quark_cleanup")
 
         # 避免在事件循环中做同步文件 I/O
         self._usage_md_cache = await asyncio.to_thread(load_usage_md)
@@ -1055,6 +1075,11 @@ class Plugin(Star):
         else:
             batch_count = 1
 
+        merged.pop("QR", None)
+        merged.pop("QK", None)
+        merged.pop("qr", None)
+        merged.pop("qk", None)
+
         max_n = int(getattr(self.config.request, "max_n", 0) or 0)
         if max_n > 0 and batch_count > max_n:
             raise ValueError(f"参数 n 不能超过 {max_n}")
@@ -1157,6 +1182,37 @@ class Plugin(Star):
     async def cmd_query_quota(self, event: AstrMessageEvent):
         """查询自己的画图额度"""
         async for result in handle_query_quota(self, event):
+            yield result
+
+    @event_filter.command("nai今日排行")
+    async def cmd_nai_today_ranking(self, event: AstrMessageEvent):
+        """查看今日成功出图排行榜（前十名）"""
+        ranking = await self.user_manager.aget_today_draw_ranking(limit=10)
+        if not ranking:
+            yield event.plain_result("今日还没有成功生成的图片。")
+            return
+        medals = ("🥇", "🥈", "🥉")
+        lines = ["今日绘图排行榜"]
+        for index, (user_id, name, count) in enumerate(ranking, 1):
+            display = name or f"用户 {user_id[-4:]}"
+            prefix = medals[index - 1] if index <= len(medals) else f"{index}."
+            lines.append(f"{prefix} {display}：{count} 张")
+        yield event.plain_result("\n".join(lines))
+
+    @event_filter.command("nai总数")
+    async def cmd_nai_total_count(self, event: AstrMessageEvent):
+        """查看累计成功出图总数"""
+        total = await self.user_manager.aget_total_draw_count()
+        yield event.plain_result(f"泡泡画图累计成功生成：{total} 张")
+
+    @event_filter.command("nai账户")
+    async def cmd_nai_accounts(self, event: AstrMessageEvent):
+        async for result in handle_nai_accounts(self, event):
+            yield result
+
+    @event_filter.command("nai审计")
+    async def cmd_anlas_audit(self, event: AstrMessageEvent):
+        async for result in handle_anlas_audit(self, event):
             yield result
 
     # ========== 管理员命令 ==========
@@ -1492,6 +1548,52 @@ class Plugin(Star):
         cs_names = [name for _, name in sorted(cs_entries.items(), key=lambda x: x[0])]
         return [name for _, name in presets], other_params, cs_names, image_params
     
+    @event_filter.command("拉上帷幕")
+    async def cmd_raise_curtain(self, event: AstrMessageEvent):
+        if not self.config.curtain.enabled:
+            yield event.plain_result("帷幕功能当前已关闭")
+            return
+        session_id = event.get_session_id()
+        yield event.plain_result("请在 60 秒内发送一张帷幕图，发送“取消”可终止。")
+
+        @session_waiter(timeout=60, record_history_chains=False)
+        async def waiter(controller: SessionController, incoming: AstrMessageEvent):
+            if incoming.message_str.strip() == "取消":
+                await incoming.send(incoming.plain_result("已取消拉上帷幕。"))
+                controller.stop()
+                return
+            image_component = next((item for item in incoming.message_obj.message if isinstance(item, Image)), None)
+            if image_component is None:
+                await incoming.send(incoming.plain_result("请发送一张图片，或发送“取消”。"))
+                return
+            try:
+                await self.curtain_store.save_component(session_id, image_component)
+                await incoming.send(incoming.plain_result("帷幕已拉上。之后使用 /nai 或 nai画图即可合成，使用 /撤下帷幕关闭。"))
+            except Exception as exc:
+                await incoming.send(incoming.plain_result(f"帷幕保存失败：{exc}"))
+            finally:
+                controller.stop()
+
+        try:
+            await waiter(event, session_filter=_CurtainSessionFilter(session_id))
+        except TimeoutError:
+            yield event.plain_result("等待帷幕图超时，已取消。")
+        finally:
+            event.stop_event()
+
+    @event_filter.command("查看帷幕")
+    async def cmd_view_curtain(self, event: AstrMessageEvent):
+        path = self.curtain_store.get(event.get_session_id())
+        if path is None:
+            yield event.plain_result("当前聊天窗口没有有效帷幕。")
+        else:
+            yield event.chain_result([Image.fromFileSystem(path)])
+
+    @event_filter.command("撤下帷幕")
+    async def cmd_remove_curtain(self, event: AstrMessageEvent):
+        self.curtain_store.delete(event.get_session_id())
+        yield event.plain_result("当前聊天窗口的帷幕已撤下。")
+
     @event_filter.command("nai画图")
     async def cmd_nai_draw(self, event: AstrMessageEvent):
         """使用插件 AI 直接画图"""

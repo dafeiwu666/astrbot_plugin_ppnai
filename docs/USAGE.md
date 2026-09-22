@@ -456,6 +456,24 @@ nai签到
 查询额度
 ```
 
+### 绘图统计
+
+插件会在每次成功生成图片后记录统计数据，批量生成按实际图片张数计数；失败请求不会计入统计。统计数据保存在用户数据文件中，并兼容已有的额度数据。
+
+查看当天成功出图排行榜（前十名）：
+
+```
+nai今日排行
+```
+
+查看插件累计成功生成的图片总数：
+
+```
+nai总数
+```
+
+排行榜优先按今日出图数量降序排列；未设置昵称时只显示用户 ID 的后四位。
+
 ---
 
 ## 📊 队列系统
@@ -554,6 +572,69 @@ character_keep=true
 - 配置开启且 `data=false`：仍输出（配置开启优先）
 - 配置关闭且未填写 `data` 或 `data=false`：不输出
 
+### 二维码输出 `QR=true`
+
+`QR=true` 是单次绘图参数，与 `data=true` 同级，生成完成后额外发送二维码：
+
+```
+nai
+tag=1girl, coffee shop
+QR=true
+```
+
+由于普通二维码无法容纳完整 PNG，插件会自动把图片编码为带序号的分片二维码。批量生成或大图可能会发送多张二维码，需要按二维码中的序号顺序拼接内容后再恢复图片。
+
+### 夸克网盘分享 `QK=true`
+
+`QK=true` 是单次绘图参数，生成完成后额外上传图片到夸克网盘并发送公开分享链接：
+
+```
+nai
+tag=1girl, coffee shop
+QK=true
+```
+
+使用前需要：
+
+1. 在配置中开启 `quark.enabled=true`。
+2. 将夸克 Cookie 保存到 `AstrBot/data/plugin_data/astrbot_plugin_ppnai/quark/session.cookie`。
+3. 根据需要设置 `quark.link_expiry_minutes`、`quark.parent_folder_id` 和 `quark.delete_after_expiry`。
+
+夸克链接会作为生成后的独立附加消息发送，不会替代原图；批量生成时每张图片都会尝试上传并输出对应链接。开启自动删除后，插件只会删除自己登记的上传文件。
+
+### 帷幕合成
+
+帷幕按聊天会话保存，适用于 `nai`、`nai画图` 和自动画图：
+
+```
+拉上帷幕
+[下一条消息发送表图]
+```
+
+设置成功后，后续生成图片会自动进行幻影坦克合成。管理当前会话的帷幕：
+
+```
+查看帷幕
+撤下帷幕
+```
+
+单次生成可以使用 `帷幕=灰度` 切换为灰度模式；默认模式和颜色合成参数在 `curtain.*` 中配置。发送 `取消` 可以取消等待表图。
+
+### Anlas 账户与消耗审计
+
+管理员命令：
+
+```
+nai账户
+nai审计
+```
+
+`nai账户` 查询已配置 Token 的订阅状态和 Anlas 余额；`nai审计` 查看本地记录的最近生成、账号、参数及生成前后余额变化。审计文件保存在插件数据目录的 `anlas_audit.jsonl` 中。
+
+### 出图后反馈
+
+开启 `reaction.enabled` 后，生成成功会按冷却时间随机发送短评。配置 `reaction.sticker_enabled=true` 并将表情图片放入插件数据目录的 `reaction_stickers` 文件夹后，还会按 `reaction.sticker_probability` 随机附带表情包。短评文本在 `reaction.comments` 中按行配置。
+
 ### 图片缓存
 
 - `general.vibe_image_cache_enabled`：缓存氛围转移输入原图，默认开启。
@@ -647,6 +728,8 @@ role=D2|1girl, cool|bad anatomy
 | `vibe_transfer_info_extract` `v_t_i_e` | 氛围转移信息提取度 | 0-1 |
 | `vibe_transfer_ref_strength` `v_t_r_s` | 氛围转移参考强度 | 0-1 |
 | `data` | 输出参数记录 | 可选 `true` / `false`；具体优先级见上方说明 |
+| `QR` | 输出图片二维码 | `QR=true`；大图会拆分为多张带序号的二维码 |
+| `QK` | 上传并分享夸克网盘链接 | `QK=true`；需开启 `quark.enabled` 并配置 Cookie |
 | `role` | 角色/多角色 | 多角色控制 |
 | `character_keep` `c_k` | 角色保持/ck | 保持角色特征 |
 | `character_keep_vibe` `c_k_v` | 角色保持氛围 | true/false |
@@ -664,6 +747,13 @@ role=D2|1girl, cool|bad anatomy
 | `nai队列` | 查询队列状态 | |
 | `nai签到` | 每日签到获取额度 | |
 | `查询额度` | 查询剩余额度 | |
+| `nai今日排行` | 查看今日成功出图排行榜（前十名） | |
+| `nai总数` | 查看插件累计成功生成的图片总数 | |
+| `nai账户` | 查询 NovelAI 账户订阅状态和 Anlas 余额（管理员） | |
+| `nai审计` | 查看最近 NovelAI Anlas 消耗审计（管理员） | |
+| `拉上帷幕` | 设置当前会话的帷幕表图 | 后续生成自动进行幻影坦克合成 |
+| `查看帷幕` | 查看当前会话的帷幕表图 | |
+| `撤下帷幕` | 移除当前会话的帷幕表图 | |
 | `nai黑名单添加` | 添加黑名单（管理员） | |
 | `nai黑名单移除` | 移除黑名单（管理员） | |
 | `nai黑名单列表` | 查看黑名单（管理员） | |

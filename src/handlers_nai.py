@@ -1,11 +1,17 @@
 """Command handlers for nai draw and nai."""
 
 import asyncio
+import os
 import random
+import time
+import tempfile
+from pathlib import Path
 from collections.abc import AsyncIterator
+from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.message_components import Image, Node, Nodes, Plain
+from astrbot.api.star import StarTools
 
 from .data_source import GenerateError, wrapped_generate
 from .image_params import iter_key_values, resolve_image_params
@@ -19,6 +25,74 @@ from .handlers_shared import (
     merge_nai_params,
 )
 from .queue_flow import QueueRejected, acquire_generation_semaphore, reserve_queue
+from .curtain import compose_curtain
+from .qr_code import build_qr_images
+from .quark import build_quark_result, upload_images_to_quark
+from .anlas_audit import read_balance, record_generation
+
+
+_LAST_REACTION_AT = 0.0
+
+
+def _flag(event: Any, name: str) -> bool:
+    for line in event.message_str.splitlines():
+        if "=" not in line:
+            continue
+        key, value = (part.strip() for part in line.split("=", 1))
+        if key.lower() == name.lower():
+            return value.lower() in {"true", "1", "on", "yes", "是", "开"}
+    return False
+
+
+def build_draw_reaction_result(plugin: Any, event: Any):
+    global _LAST_REACTION_AT
+    reaction = getattr(plugin.config, "reaction", None)
+    if reaction is None or not reaction.enabled:
+        return None
+    now = time.monotonic()
+    if now - _LAST_REACTION_AT < reaction.cooldown_seconds:
+        return None
+    comments = [item.strip() for item in str(reaction.comments).splitlines() if item.strip()]
+    components = [Plain(random.choice(comments))] if comments else []
+    if reaction.sticker_enabled and random.random() < reaction.sticker_probability:
+        sticker_dir = StarTools.get_data_dir("astrbot_plugin_ppnai") / "reaction_stickers"
+        stickers = [p for p in sticker_dir.iterdir() if p.is_file()] if sticker_dir.is_dir() else []
+        if stickers:
+            components.append(Image.fromFileSystem(random.choice(stickers)))
+    if not components:
+        return None
+    _LAST_REACTION_AT = now
+    return event.chain_result(components)
+
+
+async def _apply_curtain(plugin: Any, event: Any, images: list[bytes]) -> list[bytes]:
+    front = plugin.curtain_store.get(event.get_session_id())
+    if front is None:
+        return images
+    mode = "gray" if "帷幕=灰度" in event.message_str or "curtain=gray" in event.message_str.lower() else plugin.config.curtain.default_mode
+    output_dir = plugin.curtain_store.root / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    result = []
+    for image in images:
+        _handle, filename = tempfile.mkstemp(suffix=".png", dir=output_dir)
+        os.close(_handle)
+        await asyncio.to_thread(Path(filename).unlink, missing_ok=True)
+        try:
+            result.append(await compose_curtain(front, image, Path(filename), mode, plugin.config.curtain.color_a, plugin.config.curtain.color_b, plugin.config.curtain.color_weight))
+        finally:
+            await asyncio.to_thread(Path(filename).unlink, missing_ok=True)
+    return result
+
+
+async def _send_optional_outputs(plugin: Any, event: Any, images: list[bytes]):
+    if _flag(event, "QR"):
+        qr_images = [qr for image in images for qr in build_qr_images(image)]
+        yield event.chain_result([Image.fromBytes(qr) for qr in qr_images])
+    if _flag(event, "QK"):
+        urls = await upload_images_to_quark(plugin, images)
+        result = build_quark_result(event, urls)
+        if result is not None:
+            yield result
 
 
 def _strip_image_param_lines(raw_params: str) -> str:
@@ -30,6 +104,10 @@ def _strip_image_param_lines(raw_params: str) -> str:
         "vibe_transfer_ref_strength",
         "character_keep_vibe",
         "character_keep_strength",
+        "QR",
+        "QK",
+        "qr",
+        "qk",
     }
     kept_lines: list[str] = []
     for raw_line in raw_params.splitlines():
@@ -237,7 +315,9 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
                         async def _do_generate():
                             nonlocal token
                             token = plugin._get_next_token()
-                            return await wrapped_generate(
+                            token_index = ((plugin._token_index - 1) % len(plugin.config.request.tokens)) + 1
+                            balance_before = await read_balance(plugin, token)
+                            image = await wrapped_generate(
                                 req,
                                 plugin.config,
                                 token=token,
@@ -246,6 +326,8 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
                                 image_cache=plugin.image_history_cache,
                                 owner_id=event.get_sender_id(),
                             )
+                            plugin._create_background_task(record_generation(plugin, token_index=token_index, token=token, req=req, user_id=event.get_sender_id(), sender_name=event.get_sender_name(), session=event.unified_msg_origin, outcome="success", balance_before=balance_before, batch_count=batch_count), name="nai:anlas_audit")
+                            return image
 
                         images.append(await plugin._run_with_retry(_do_generate))
                         last_req = req
@@ -260,6 +342,10 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
                     except Exception:  # noqa: BLE001
                         logger.exception("Failed to save generation preview")
 
+                images = await _apply_curtain(plugin, event, images)
+                await plugin.user_manager.arecord_successful_draw(
+                    user_id, len(images), event.get_sender_name()
+                )
                 sender_id = event.get_sender_id()
                 sender_name = event.get_sender_name()
                 if plugin.config.general.merge_draw_to_chat_record:
@@ -276,6 +362,11 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
                     yield event.chain_result([nodes])
                 else:
                     yield event.chain_result([Image.fromBytes(img) for img in images])
+                async for result in _send_optional_outputs(plugin, event, images):
+                    yield result
+                reaction_result = build_draw_reaction_result(plugin, event)
+                if reaction_result is not None:
+                    yield reaction_result
                 if last_req is not None and (
                     plugin.config.general.send_generation_details
                     or last_req.data is True
@@ -413,7 +504,9 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
                         nonlocal token
                         token = plugin._get_next_token()
                         req.token = token
-                        return await wrapped_generate(
+                        token_index = ((plugin._token_index - 1) % len(plugin.config.request.tokens)) + 1
+                        balance_before = await read_balance(plugin, token)
+                        image = await wrapped_generate(
                             req,
                             plugin.config,
                             token=token,
@@ -422,6 +515,8 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
                             image_cache=plugin.image_history_cache,
                             owner_id=event.get_sender_id(),
                         )
+                        plugin._create_background_task(record_generation(plugin, token_index=token_index, token=token, req=req, user_id=event.get_sender_id(), sender_name=event.get_sender_name(), session=event.unified_msg_origin, outcome="success", balance_before=balance_before, batch_count=batch_count), name="nai:anlas_audit")
+                        return image
 
                     images: list[bytes] = []
                     for _ in range(batch_count):
@@ -437,6 +532,10 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
                     except Exception:  # noqa: BLE001
                         logger.exception("Failed to save generation preview")
 
+                images = await _apply_curtain(plugin, event, images)
+                await plugin.user_manager.arecord_successful_draw(
+                    user_id, len(images), event.get_sender_name()
+                )
                 sender_id = event.get_sender_id()
                 sender_name = event.get_sender_name()
                 if plugin.config.general.merge_draw_to_chat_record:
@@ -451,6 +550,11 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
                     yield event.chain_result([nodes])
                 else:
                     yield event.chain_result([Image.fromBytes(img) for img in images])
+                async for result in _send_optional_outputs(plugin, event, images):
+                    yield result
+                reaction_result = build_draw_reaction_result(plugin, event)
+                if reaction_result is not None:
+                    yield reaction_result
                 if plugin.config.general.send_generation_details or req.data is True:
                     report = format_generation_report(
                         event.message_str.removeprefix("nai").strip(),

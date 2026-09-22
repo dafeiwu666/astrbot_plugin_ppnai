@@ -8,6 +8,49 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 
+import httpx
+
+from .anlas_audit import recent_entries
+
+async def handle_nai_accounts(plugin, event) -> AsyncIterator:
+    if not plugin._check_permission(event):
+        yield event.plain_result("权限不足，仅管理员可使用此命令")
+        return
+    tokens = [token.strip() for token in plugin.config.request.tokens if token.strip()]
+    if not tokens:
+        yield event.plain_result("未配置 NovelAI Token")
+        return
+
+    async def query(index: int, token: str) -> str:
+        try:
+            async with httpx.AsyncClient(proxy=getattr(plugin.config.request, "proxy", "") or None, timeout=20, trust_env=False) as client:
+                response = await client.get("https://image.novelai.net/user/subscription", headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
+            response.raise_for_status()
+            data = response.json()
+            steps = data.get("trainingStepsLeft") or {}
+            tier = {0: "Paper", 1: "Tablet", 2: "Scroll", 3: "Opus"}.get(data.get("tier"), str(data.get("tier", "未知")))
+            return f"账号 {index}：{tier}，订阅{'有效' if data.get('active') else '未激活'}\nAnlas：订阅 {steps.get('fixedTrainingStepsLeft', '未知')}，购买 {steps.get('purchasedTrainingSteps', '未知')}"
+        except Exception as exc:
+            return f"账号 {index}：查询失败（{type(exc).__name__}）"
+
+    yield event.plain_result("NovelAI 账户状态：\n" + "\n\n".join(await asyncio.gather(*(query(i, token) for i, token in enumerate(tokens, 1)))))
+
+
+async def handle_anlas_audit(plugin, event) -> AsyncIterator:
+    if not plugin._check_permission(event):
+        yield event.plain_result("权限不足，仅管理员可使用此命令")
+        return
+    entries = await asyncio.to_thread(recent_entries, 20)
+    if not entries:
+        yield event.plain_result("暂无本地 Anlas 审计记录")
+        return
+    lines = ["最近 Anlas 审计："]
+    for item in entries:
+        delta = item.get("actual_fixed_anlas_delta")
+        cost = f"实际订阅 Anlas 变化 {delta}" if delta is not None else "实际余额变化未取到"
+        lines.append(f"{item.get('at')}｜账号{item.get('token_index')}｜{item.get('sender_name')}｜{item.get('model')} {item.get('size')} {item.get('steps')}步｜{cost}\n{item.get('official_rule')}")
+    yield event.plain_result("\n".join(lines))
+
 
 async def handle_checkin(plugin, event) -> AsyncIterator:
     user_id = plugin._get_user_id(event)

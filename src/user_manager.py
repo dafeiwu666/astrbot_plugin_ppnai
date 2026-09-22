@@ -17,6 +17,9 @@ class UserData(BaseModel):
     """单个用户的数据"""
     quota: int = Field(default=0, description="剩余额度")
     last_checkin_date: str | None = Field(default=None, description="上次签到日期")
+    draw_total: int = Field(default=0, description="成功生成图片累计数")
+    draw_daily: dict[str, int] = Field(default_factory=dict, description="按日期记录的成功生成图片数")
+    display_name: str = Field(default="", description="排行展示昵称")
 
 
 class UserDataStore(BaseModel):
@@ -186,6 +189,50 @@ class UserManager:
             return False, "你的画图次数已用完，请/nai签到获取额度"
         
         return True, ""
+
+    # ========== 绘图统计 ==========
+
+    def record_successful_draw(
+        self, user_id: str, count: int = 1, display_name: str = ""
+    ) -> None:
+        """记录成功生成的图片；失败请求不调用本方法。"""
+        if count <= 0:
+            return
+        user = self._get_user(user_id)
+        today = date.today().isoformat()
+        user.draw_total += count
+        user.draw_daily[today] = user.draw_daily.get(today, 0) + count
+        if display_name.strip():
+            user.display_name = display_name.strip()
+        self._save()
+
+    def get_today_draw_ranking(
+        self, limit: int | None = None
+    ) -> list[tuple[str, str, int]]:
+        today = date.today().isoformat()
+        rows = [
+            (user_id, user.display_name, user.draw_daily.get(today, 0))
+            for user_id, user in self._load().users.items()
+            if user.draw_daily.get(today, 0) > 0
+        ]
+        ranking = sorted(rows, key=lambda row: (-row[2], row[0]))
+        return ranking if limit is None else ranking[:max(1, limit)]
+
+    def get_total_draw_count(self) -> int:
+        return sum(user.draw_total for user in self._load().users.values())
+
+    async def arecord_successful_draw(
+        self, user_id: str, count: int = 1, display_name: str = ""
+    ) -> None:
+        await asyncio.to_thread(self.record_successful_draw, user_id, count, display_name)
+
+    async def aget_today_draw_ranking(
+        self, limit: int | None = None
+    ) -> list[tuple[str, str, int]]:
+        return await asyncio.to_thread(self.get_today_draw_ranking, limit)
+
+    async def aget_total_draw_count(self) -> int:
+        return await asyncio.to_thread(self.get_total_draw_count)
     
     # ========== 签到系统 ==========
     

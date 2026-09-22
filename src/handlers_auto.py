@@ -21,6 +21,8 @@ from .handlers_shared import (
     merge_nai_params,
 )
 from .queue_flow import QueueRejected, acquire_generation_semaphore, reserve_queue
+from .handlers_nai import _apply_curtain, _send_optional_outputs, build_draw_reaction_result
+from .anlas_audit import read_balance, record_generation
 
 
 async def handle_auto_draw_off(plugin, event) -> AsyncIterator:
@@ -423,7 +425,9 @@ async def _auto_draw_generate(
                         async def _do_generate():
                             nonlocal token
                             token = plugin._get_next_token()
-                            return await wrapped_generate(
+                            token_index = ((plugin._token_index - 1) % len(plugin.config.request.tokens)) + 1
+                            balance_before = await read_balance(plugin, token)
+                            image = await wrapped_generate(
                                 req,
                                 plugin.config,
                                 token=token,
@@ -432,6 +436,8 @@ async def _auto_draw_generate(
                                 image_cache=plugin.image_history_cache,
                                 owner_id=opener_user_id,
                             )
+                            plugin._create_background_task(record_generation(plugin, token_index=token_index, token=token, req=req, user_id=opener_user_id, sender_name=event.get_sender_name(), session=event.unified_msg_origin, outcome="success", balance_before=balance_before, batch_count=batch_count), name="nai:anlas_audit")
+                            return image
 
                         images.append(await plugin._run_with_retry(_do_generate))
                         last_req = req
@@ -446,6 +452,10 @@ async def _auto_draw_generate(
                     except Exception:  # noqa: BLE001
                         logger.exception("Failed to save auto-draw preview")
 
+                images = await _apply_curtain(plugin, event, images)
+                await plugin.user_manager.arecord_successful_draw(
+                    opener_user_id, len(images), event.get_sender_name()
+                )
                 sender_id = event.get_sender_id()
                 sender_name = event.get_sender_name()
                 if plugin.config.general.merge_draw_to_chat_record:
@@ -460,6 +470,12 @@ async def _auto_draw_generate(
                     await event.send(event.chain_result([nodes]))
                 else:
                     await event.send(event.chain_result([Image.fromBytes(img) for img in images]))
+
+                async for result in _send_optional_outputs(plugin, event, images):
+                    await event.send(result)
+                reaction_result = build_draw_reaction_result(plugin, event)
+                if reaction_result is not None:
+                    await event.send(reaction_result)
 
                 if last_req is not None and (
                     plugin.config.general.send_generation_details

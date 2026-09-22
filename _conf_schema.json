@@ -191,6 +191,25 @@
       }
     }
   },
+  "reaction": {
+    "title": "ReactionConfig",
+    "type": "object",
+    "default": {
+      "enabled": true,
+      "sticker_enabled": false,
+      "sticker_probability": 0.35,
+      "cooldown_seconds": 30,
+      "comments": "呵呵，画从梦的另一端飘过来了。\n完成了，慢慢看吧。\n这张没有迷失在虚无里呢。\n画面已经落定，收好它吧。"
+    },
+    "description": "出图反馈",
+    "items": {
+      "enabled": {"default": true, "description": "出图后发送随机短评", "title": "Enabled", "type": "bool"},
+      "sticker_enabled": {"default": false, "description": "出图后随机附带表情包", "title": "Sticker Enabled", "type": "bool"},
+      "sticker_probability": {"default": 0.35, "description": "表情包发送概率", "minimum": 0, "maximum": 1, "title": "Sticker Probability", "type": "float"},
+      "cooldown_seconds": {"default": 30, "description": "自动反馈冷却时间（秒）", "minimum": 0, "maximum": 86400, "title": "Cooldown Seconds", "type": "int"},
+      "comments": {"default": "呵呵，画从梦的另一端飘过来了。\n完成了，慢慢看吧。\n这张没有迷失在虚无里呢。\n画面已经落定，收好它吧。", "description": "出图后随机短评列表", "hint": "每行一句；留空时不发送短评。", "title": "Comments", "type": "text"}
+    }
+  },
   "llm": {
     "title": "LLMConfig",
     "type": "object",
@@ -574,6 +593,33 @@
         "title": "Character Keep Strength",
         "type": "float"
       }
+    }
+  },
+  "curtain": {
+    "title": "CurtainConfig",
+    "type": "object",
+    "default": {"enabled": true, "max_image_mb": 10, "default_mode": "color", "color_a": 0.3, "color_b": -20.0, "color_weight": 0.45},
+    "description": "帷幕幻影坦克设置",
+    "items": {
+      "enabled": {"default": true, "description": "启用帷幕幻影坦克功能", "title": "Enabled", "type": "bool"},
+      "max_image_mb": {"default": 10, "description": "帷幕图最大体积（MB）", "minimum": 1, "maximum": 100, "title": "Max Image Mb", "type": "int"},
+      "default_mode": {"default": "color", "description": "默认帷幕模式（color 或 gray）", "title": "Default Mode", "type": "string"},
+      "color_a": {"default": 0.3, "description": "彩色模式亮度缩放", "minimum": 0.1, "maximum": 3.0, "title": "Color A", "type": "float"},
+      "color_b": {"default": -20.0, "description": "彩色模式亮度偏移", "minimum": -50, "maximum": 50, "title": "Color B", "type": "float"},
+      "color_weight": {"default": 0.45, "description": "彩色模式颜色权重", "minimum": 0.0, "maximum": 1.0, "title": "Color Weight", "type": "float"}
+    }
+  },
+  "quark": {
+    "title": "QuarkConfig",
+    "type": "object",
+    "default": {"enabled": false, "link_expiry_minutes": 1440, "delete_after_expiry": false, "cleanup_interval_minutes": 15, "parent_folder_id": "0"},
+    "description": "夸克网盘分享链接",
+    "items": {
+      "enabled": {"default": false, "description": "启用 QK=true 夸克网盘分享", "title": "Enabled", "type": "bool"},
+      "link_expiry_minutes": {"default": 1440, "description": "夸克分享链接有效分钟数", "minimum": 1, "maximum": 43200, "title": "Link Expiry Minutes", "type": "int"},
+      "delete_after_expiry": {"default": false, "description": "链接到期后自动删除上传图片", "title": "Delete After Expiry", "type": "bool"},
+      "cleanup_interval_minutes": {"default": 15, "description": "过期图片检查间隔（分钟）", "minimum": 5, "maximum": 1440, "title": "Cleanup Interval Minutes", "type": "int"},
+      "parent_folder_id": {"default": "0", "description": "夸克网盘目标目录 ID；0 表示根目录", "title": "Parent Folder Id", "type": "string"}
     }
   }
 }
