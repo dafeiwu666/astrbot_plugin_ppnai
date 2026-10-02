@@ -96,7 +96,7 @@ async def _enable_auto_draw(
         for cs_name in cs_names:
             exists = await asyncio.to_thread(plugin.cs_store.exists, user_id, cs_name)
             if not exists:
-                return False, f"角色保持 {cs_name} 不存在，请先使用 /cs 创建"
+                return False, f"角色Tag {cs_name} 不存在，请先使用 /cs添加 创建"
 
     uploaded_images = _collect_images_with_replies(event.message_obj.message)
     try:
@@ -199,7 +199,7 @@ async def handle_auto_draw(plugin, event) -> AsyncIterator:
     else:
         status_parts.append("未使用预设")
     if cs_names:
-        status_parts.append(f"角色保持：{', '.join(cs_names)}")
+        status_parts.append(f"角色Tag：{', '.join(cs_names)}")
     image_parts: list[str] = []
     if current.get("i2i_image"):
         image_parts.append("图生图")
@@ -370,7 +370,7 @@ async def _auto_draw_generate(
                 character_keep_image = auto_info.get("character_keep_image")
                 vision_images = auto_info.get("vision_images")
 
-                cs_content_parts: list[str] = []
+                cs_tag_parts: list[str] = []
                 if cs_names:
                     for cs_name in cs_names:
                         exists = await asyncio.to_thread(
@@ -379,16 +379,15 @@ async def _auto_draw_generate(
                         if not exists:
                             await event.send(
                                 event.plain_result(
-                                    f"🎨 自动画图失败：角色保持 {cs_name} 不存在"
+                                    f"🎨 自动画图失败：角色Tag {cs_name} 不存在"
                                 )
                             )
                             return
-                        cs_content_parts.append(
-                            await asyncio.to_thread(
-                                plugin.cs_store.read, opener_user_id, cs_name
-                            )
+                        character_tag = await asyncio.to_thread(
+                            plugin.cs_store.read_tag, opener_user_id, cs_name
                         )
-                cs_content = "\n\n".join(cs_content_parts)
+                        if character_tag:
+                            cs_tag_parts.append(character_tag)
 
                 full_parts = list(reversed(preset_contents)) + [ai_response_with_prefix]
                 full_instructions = "\n\n".join(full_parts)
@@ -413,7 +412,6 @@ async def _auto_draw_generate(
                             vibe_transfer_images=vibe_transfer_images,
                             vision_images=vision_images,
                             skip_default_prompts=bool(preset_contents),
-                            extra_system_prompt=cs_content,
                         )
 
                         if character_keep_image and req.addition is not None:
@@ -425,6 +423,10 @@ async def _auto_draw_generate(
 
                         if user_req is not None:
                             apply_explicit_overrides(req, user_req, explicit_ids, wrappers)
+                        if cs_tag_parts:
+                            req.tag = ", ".join(
+                                part for part in [req.tag, *cs_tag_parts] if part.strip()
+                            )
 
                         async def _do_generate():
                             nonlocal token

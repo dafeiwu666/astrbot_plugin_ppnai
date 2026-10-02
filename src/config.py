@@ -85,7 +85,7 @@ class GeneralConfig(BaseModel):
         Field(
             description="额外资源管理员用户 ID",
             json_schema_extra={
-                "hint": "默认只有 bot 管理员；填写用户 ID 后允许这些用户管理预设、图库和角色保持。",
+                "hint": "默认只有 bot 管理员；填写用户 ID 后允许这些用户管理预设、图库和角色 Tag 库。",
             },
         ),
     ] = []
@@ -94,7 +94,7 @@ class GeneralConfig(BaseModel):
         Field(
             description="允许普通用户查看全部资源",
             json_schema_extra={
-                "hint": "开启后普通用户的预设、图库和角色保持列表会展示所有用户资源，并按平台和用户 ID 分组。",
+                "hint": "开启后普通用户的预设、图库和角色 Tag 库列表会展示所有用户资源，并按平台和用户 ID 分组。",
             },
         ),
     ] = False

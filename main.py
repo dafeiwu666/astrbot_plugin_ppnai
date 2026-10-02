@@ -19,7 +19,7 @@ from typing_extensions import override
 
 from astrbot.api import logger
 from astrbot.api import AstrBotConfig
-from astrbot.api.event import AstrMessageEvent, MessageChain, filter as event_filter
+from astrbot.api.event import AstrMessageEvent, filter as event_filter
 from astrbot.api.provider import LLMResponse
 from astrbot.api.message_components import Image, Node, Nodes, Plain, Reply
 from astrbot.api.star import Context, Star, StarTools
@@ -79,13 +79,10 @@ from .src.data_source import (
 )
 from .src.llm import (
     ConfigNeededTool,
-    ReturnToLLMError,
-    llm_generate_advanced_req,
-    llm_generate_image,
 )
 from .src.llm_utils import format_readable_error
 from .src.models import Req
-from .src.character_keep_store import CharacterKeepStore, extract_nai_tag
+from .src.character_keep_store import CharacterKeepStore
 from .src.params import _collect_images_with_replies, parse_req
 from .src.image_io import resolve_image
 from .src.user_manager import UserManager
@@ -204,6 +201,7 @@ try:
     from .src.handlers_cs import (
         handle_ccs,
         handle_cs,
+        handle_cs_add,
         handle_dcs,
         handle_scs,
     )
@@ -212,6 +210,7 @@ except Exception:  # noqa: BLE001
         _m = _load_src_module("handlers_cs")
         handle_ccs = _m.handle_ccs
         handle_cs = _m.handle_cs
+        handle_cs_add = _m.handle_cs_add
         handle_dcs = _m.handle_dcs
         handle_scs = _m.handle_scs
     except Exception:  # noqa: BLE001
@@ -223,7 +222,7 @@ except Exception:  # noqa: BLE001
         def _make_missing_cs_handler(handler_name: str):
             async def _handler(_plugin, event):
                 yield event.plain_result(
-                    "角色保持模块加载失败，相关命令暂不可用。\n"
+                    "角色 Tag 库模块加载失败，相关命令暂不可用。\n"
                     "请确认已完整部署插件文件（尤其是 src/handlers_cs.py 与 src/__init__.py），然后重启 AstrBot。\n"
                     f"缺失处理器：{handler_name}"
                 )
@@ -231,6 +230,7 @@ except Exception:  # noqa: BLE001
             return _handler
 
         handle_cs = _make_missing_cs_handler("handle_cs")
+        handle_cs_add = _make_missing_cs_handler("handle_cs_add")
         handle_dcs = _make_missing_cs_handler("handle_dcs")
         handle_scs = _make_missing_cs_handler("handle_scs")
         handle_ccs = _make_missing_cs_handler("handle_ccs")
@@ -333,89 +333,44 @@ WAITING_REPLIES = [
 
 
 @model_with_model_config(ConfigDict(extra="forbid"))
-class STNaiGenerateImageArgsNoImage(BaseModel):
-    instructions: Annotated[
-        str,
-        Field(
-            description=(
-                "Natural-language instructions for the image-generation agent"
-                " that precisely describe the desired image"
-                ", as detailed as possible."
-            )
-        ),
-    ]
-
-
-@model_with_model_config(ConfigDict(extra="forbid"))
 class STNaiGenerateImageArgs(BaseModel):
     instructions: Annotated[
         str,
         Field(
             description=(
-                "Natural-language instructions for the image-generation agent"
-                " that precisely describe the desired image"
-                ", as detailed as possible."
-                " Don't use the original index number in image list here"
-                ', instead, use sentences like "image referenced for image-to-image" or'
-                '"the first image referenced in vibe transfer".'
+                "Complete /nai command arguments, one key=value per line."
+                " Include tag=... and optional model=..., size=..., s1=...;"
+                " do not include the /nai command prefix."
             )
         ),
     ]
-    i2i_image: Annotated[
-        int | None,
-        Field(
-            description=(
-                "Optional. The index of image you want to use"
-                " as the base for image-to-image generation."
-            )
-        ),
-    ] = None
-    vibe_transfer_images: Annotated[
-        list[int] | None,
-        Field(
-            description=(
-                "Optional. The indices of images you want to"
-                " use as the base for vibe/style transfer (in apply order)."
-            )
-        ),
-    ] = None
 
 
 @dataclass(config=ConfigDict(arbitrary_types_allowed=True))
 class STNaiGenerateImageTool(ConfigNeededTool):
     name: str = "stnai_generate_image"
-    description: str = (
-        "Generate an anime-style image and send it to user."
-        " Use when user wants you to draw an image."
-    )
+    description: str = """AI绘画提示词:
+基本规则:
+    触发条件: 用户要求使用AI绘图提示词、生成NAI tag或要求画图
+    强制输出限制: 仅输出tag指令代码，严禁包含任何回复、口癖或废话。如生成有姓名角色时则不写服装和人物外貌细节，缺少的tag数用动作tag补充
+    Tag数量要求: 约30个tag，必须细化服装、眼瞳与发型样式，体现设计主题感
+    权重语法: "系数::tag::" (若末尾为数字需加下划线，如 "1.1::tag2_::")
+    禁用词汇: 禁止输出 masterpiece, best quality, highres 等质量词
+    Cosplay规则: 格式为 人物名 (作品名) (cosplay)，禁止直接添加单个cosplay tag
+    自然语言: 复杂动作或细节难以用tag描述时，可直接嵌入英文短句描述，需详尽描述各类动作细节甚至一小片花纹。
+输出模板:
+    /nai tag=<主体及人物tag>, <动作姿态tag>, <服装细节tag>, <场景与环境tag>(如前有具体人名则不写服装和人物外貌细节，改为各种动作姿态。)
+    size=横图/竖图/方图（默认不写size）
+    人物Tag预留库：根据用户原始请求检索当前用户的角色库；命中时按“角色名:角色库原始Tag”列出，Tag必须保持原样。工具会把命中角色作为 csN 参数交给 /nai。"""
     parameters: dict = Field(default_factory=dict)
-    # Runtime-only dependency. Keep this as Any so Pydantic does not attempt to
-    # generate a public tool schema for the cache manager implementation.
-    vibe_cache_init: Any | None = None
-    image_cache_init: Any | None = None
+    # Runtime-only callback; it is not exposed in the public tool schema.
+    nai_command_handler_init: Any | None = None
+    character_store_init: Any | None = None
+    user_id_getter_init: Any | None = None
 
     def __post_init__(self):
         super().__post_init__()
-
-        # Limit concurrent image fetching across tool calls.
-        # This is intentionally instance-level (tool object is registered once).
-        self._image_fetch_sem = Semaphore(4)
-
-        allow_image = self.config.llm.allow_i2i or self.config.llm.allow_vibe_transfer
-        if not allow_image:
-            self.parameters = STNaiGenerateImageArgsNoImage.model_json_schema()
-        else:
-            self.description += (
-                " Images (in the latest user message ONLY) are gathered into an ordered list"
-                "; refer to them by zero-based index in tool parameters."
-            )
-            parameters = STNaiGenerateImageArgs.model_json_schema()
-            props = parameters["properties"]
-            if not self.config.llm.allow_i2i:
-                del props["i2i_image"]
-            if not self.config.llm.allow_vibe_transfer:
-                del props["vibe_transfer_images"]
-            self.parameters = parameters
+        self.parameters = STNaiGenerateImageArgs.model_json_schema()
 
     async def call(
         self,
@@ -429,107 +384,102 @@ class STNaiGenerateImageTool(ConfigNeededTool):
             logger.debug(tip, exc_info=e)
             return format_readable_error(e)
 
-        ctx, event = _unwrap_tool_context(context)
+        _, event = _unwrap_tool_context(context)
+        if self.nai_command_handler_init is None:
+            return "内部错误：/nai 命令处理器未初始化。"
 
-        images = _collect_images_with_replies(event.message_obj.message)
-        sem = self._image_fetch_sem
+        command_body = args.instructions.strip()
+        if not command_body:
+            return "请提供 /nai 参数，例如：tag=1girl, blue eyes。"
 
-        async def _get_image(index: int) -> str:
+        if command_body.startswith("```"):
+            lines = command_body.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            command_body = "\n".join(lines).strip()
+
+        command_lines: list[str] = []
+        reserved_character_names: list[str] = []
+        in_character_reserve = False
+        for line in command_body.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if "人物Tag预留库" in line:
+                in_character_reserve = True
+                continue
+            if in_character_reserve:
+                if ":" in line and "=" not in line:
+                    reserved_character_names.append(line.split(":", 1)[0].strip())
+                continue
+            if line in {"/nai", "nai"}:
+                continue
+            if line.startswith("/nai "):
+                line = line.removeprefix("/nai ").strip()
+            elif line.startswith("nai "):
+                line = line.removeprefix("nai ").strip()
+            if line and "=" not in line:
+                line = f"tag={line}"
+            if line:
+                command_lines.append(line)
+
+        if not command_lines:
+            return "请提供有效的 /nai 参数。"
+
+        if self.character_store_init is not None and self.user_id_getter_init is not None:
+            query = "\n".join(
+                [event.message_str, command_body, *reserved_character_names],
+            )
             try:
-                img = images[index]
-            except Exception as e:
-                tip = f"Image index {index} is out of range (only {len(images)} images available)"
-                logger.debug(tip)
-                raise ReturnToLLMError(tip) from e
-            try:
-                async with sem:
-                    return await resolve_image(img)
-            except Exception as e:
-                tip = f"Failed to fetch image at index {index}"
-                logger.debug(tip, exc_info=e)
-                raise ReturnToLLMError(f"{tip}:\n{format_readable_error(e)}") from e
-
-        async def _resolve_i2i_image():
-            return (
-                (await _get_image(args.i2i_image))
-                if args.i2i_image is not None
-                else None
-            )
-
-        async def _resolve_vibe_transfer_images():
-            if args.vibe_transfer_images is None:
-                return None
-            res: list[str] = []
-            for idx in args.vibe_transfer_images:
-                img_str = await _get_image(idx)
-                res.append(img_str)
-            return res
-
-        try:
-            i2i_image, vibe_transfer_images = await asyncio.gather(
-                _resolve_i2i_image(),
-                _resolve_vibe_transfer_images(),
-            )
-        except ReturnToLLMError as e:
-            logger.debug(f"{e}")
-            return f"{e}"
-
-        # 视觉输入仅使用“未被 i2i/vibe 占用”的图片
-        used_indices: set[int] = set()
-        if args.i2i_image is not None:
-            used_indices.add(args.i2i_image)
-        if args.vibe_transfer_images:
-            used_indices.update(args.vibe_transfer_images)
-        vision_images = [img for idx, img in enumerate(images) if idx not in used_indices]
-
-        try:
-            # 在指令前添加"画一张图"
-            instructions_with_prefix = f"画一张图\n\n{args.instructions}"
-            image = await llm_generate_image(
-                instructions_with_prefix,
-                self.config,
-                ctx,
-                event,
-                i2i_image,
-                vibe_transfer_images,
-                vision_images=vision_images,
-                client_getter=self.client_getter,
-                vibe_cache=self.vibe_cache_init,
-                image_cache=self.image_cache_init,
-            )
-        except ReturnToLLMError as e:
-            logger.debug(f"{e}")
-            return f"{e}"
-        except Exception as e:
-            logger.exception("Internal error during image generation")
-            return (
-                f"Internal error during image generation: \n{format_readable_error(e)}"
-            )
-
-        try:
-            if self.config.general.merge_draw_to_chat_record:
-                sender_id = event.get_sender_id()
-                sender_name = event.get_sender_name()
-                nodes = Nodes([
-                    Node(
-                        uin=sender_id,
-                        name=sender_name,
-                        content=[Image.fromBytes(image)],
+                matches = await asyncio.to_thread(
+                    self.character_store_init.find_matching,
+                    self.user_id_getter_init(event),
+                    query,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.exception("Failed to search the character tag library")
+                return format_readable_error(e)
+            selected_names: set[str] = set()
+            occupied_selectors: set[str] = set()
+            for line in command_lines:
+                key, separator, value = line.partition("=")
+                normalized_key = key.strip().lower()
+                if not separator:
+                    continue
+                if normalized_key == "cs" or (
+                    normalized_key.startswith("cs")
+                    and normalized_key[2:].isdigit()
+                ):
+                    selected_names.add(value.strip())
+                    occupied_selectors.add(
+                        "cs1" if normalized_key == "cs" else normalized_key
                     )
-                ])
-                chain = MessageChain([nodes])
-            else:
-                chain = MessageChain([Image.fromBytes(image)])
-            await ctx.send_message(event.unified_msg_origin, chain)
-        except Exception as e:
-            logger.exception("Send image failed")
-            return (
-                f"Failed to send image, "
-                f"please report this error to user rather than retry"
-                f": \n{format_readable_error(e)}"
-            )
 
-        return "Image successfully sent"
+            next_index = 1
+            for name, _ in matches:
+                if name in selected_names:
+                    continue
+                while f"cs{next_index}" in occupied_selectors:
+                    next_index += 1
+                command_lines.append(f"cs{next_index}={name}")
+                selected_names.add(name)
+                occupied_selectors.add(f"cs{next_index}")
+                next_index += 1
+
+        original_message = event.message_str
+        event.message_str = f"{COMMAND}\n" + "\n".join(command_lines)
+        try:
+            async for result in self.nai_command_handler_init(event):
+                await event.send(result)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("Failed to invoke /nai from image tool")
+            return format_readable_error(e)
+        finally:
+            event.message_str = original_message
+
+        return "/nai 已执行，结果已发送到当前会话。"
 
 
 class _CurtainSessionFilter(SessionFilter):
@@ -562,8 +512,7 @@ class Plugin(Star):
         self.preset_manager = PresetManager(data_dir)
 
         cs_dir = data_dir / "cs"
-        cssaying_path = Path(__file__).parent / "src" / "prompts" / "cssaying.txt"
-        self.cs_store = CharacterKeepStore(cs_dir, cssaying_path)
+        self.cs_store = CharacterKeepStore(cs_dir)
         self.curtain_store = CurtainStore(data_dir, max_bytes=self.config.curtain.max_image_mb * 1024 * 1024)
 
         self._auto_draw_store = AutoDrawStoreManager(data_dir)
@@ -599,9 +548,9 @@ class Plugin(Star):
         self.context.add_llm_tools(
             STNaiGenerateImageTool(
                 config_init=self.config,
-                client_getter_init=self.get_http_client,
-                vibe_cache_init=self.vibe_cache_manager,
-                image_cache_init=self.image_history_cache,
+                nai_command_handler_init=self.cmd_nai,
+                character_store_init=self.cs_store,
+                user_id_getter_init=self._get_user_id,
             )
         )
 
@@ -1090,11 +1039,12 @@ class Plugin(Star):
             for cs_num, cs_name in sorted(cs_entries.items(), key=lambda x: x[0]):
                 exists = await asyncio.to_thread(self.cs_store.exists, user_id, cs_name)
                 if not exists:
-                    raise ValueError(f"角色保持 {cs_name} 不存在，请先使用 /cs 创建")
-                cs_content = await asyncio.to_thread(self.cs_store.read, user_id, cs_name)
-                cs_tag = extract_nai_tag(cs_content)
+                    raise ValueError(f"角色Tag {cs_name} 不存在，请先使用 /cs添加 创建")
+                cs_tag = await asyncio.to_thread(
+                    self.cs_store.read_tag, user_id, cs_name,
+                )
                 if not cs_tag:
-                    raise ValueError("未找到 NovelAI tag style 外貌提示词内容")
+                    raise ValueError(f"角色Tag {cs_name} 内容为空")
                 tag_parts.append(cs_tag)
 
         # 构建最终参数字符串
@@ -1452,29 +1402,35 @@ class Plugin(Star):
         async for result in handle_preset_delete(self, event):
             yield result
 
-    # ========== 角色保持命令 ==========
+    # ========== 角色 Tag 库命令 ==========
 
     @event_filter.command("cs")
     async def cmd_cs(self, event: AstrMessageEvent):
-        """角色保持：创建/列表"""
+        """查看角色 Tag 库"""
         async for result in handle_cs(self, event):
+            yield result
+
+    @event_filter.command("cs添加")
+    async def cmd_cs_add(self, event: AstrMessageEvent):
+        """添加角色名称及 NovelAI Tag"""
+        async for result in handle_cs_add(self, event):
             yield result
 
     @event_filter.command("dcs")
     async def cmd_dcs(self, event: AstrMessageEvent):
-        """角色保持删除"""
+        """删除角色 Tag"""
         async for result in handle_dcs(self, event):
             yield result
 
     @event_filter.command("scs")
     async def cmd_scs(self, event: AstrMessageEvent):
-        """查询角色保持外貌提示词"""
+        """查看角色 Tag"""
         async for result in handle_scs(self, event):
             yield result
 
     @event_filter.command("ccs")
     async def cmd_ccs(self, event: AstrMessageEvent):
-        """修改角色保持外貌提示词"""
+        """修改角色 Tag"""
         async for result in handle_ccs(self, event):
             yield result
 

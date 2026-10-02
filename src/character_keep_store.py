@@ -1,4 +1,4 @@
-"""Character keep (cs) storage helpers."""
+"""Character Tag library storage helpers (legacy module name retained)."""
 
 from __future__ import annotations
 
@@ -17,9 +17,8 @@ class CharacterKeepEntry:
 
 
 class CharacterKeepStore:
-    def __init__(self, base_dir: Path, cssaying_path: Path):
+    def __init__(self, base_dir: Path):
         self.base_dir = base_dir
-        self.cssaying_path = cssaying_path
 
     def _ensure_dir(self, path: Path) -> None:
         path.mkdir(parents=True, exist_ok=True)
@@ -67,10 +66,29 @@ class CharacterKeepStore:
         path = self._get_entry_path(user_id, name)
         return path.read_text("utf-8")
 
+    def read_tag(self, user_id: str, name: str) -> str:
+        """Read a character's NovelAI tags, upgrading legacy wrapped entries."""
+        content = self.read(user_id, name)
+        return extract_nai_tag(content) or ""
+
+    def find_matching(self, user_id: str, query: str) -> list[tuple[str, str]]:
+        """Find saved character names mentioned in a query (case-insensitive)."""
+        normalized_query = query.casefold()
+        matches: list[tuple[int, str, str]] = []
+        for name in self.list_names(user_id):
+            position = normalized_query.find(name.casefold())
+            if position < 0:
+                continue
+            tags = self.read_tag(user_id, name)
+            if tags:
+                matches.append((position, name, tags))
+        matches.sort(key=lambda match: (match[0], match[1]))
+        return [(name, tags) for _, name, tags in matches]
+
     def write(self, user_id: str, name: str, content: str, *, overwrite: bool) -> None:
         path = self._get_entry_path(user_id, name)
         if path.exists() and not overwrite:
-            raise FileExistsError(f"角色保持 {name} 已存在")
+            raise FileExistsError(f"角色Tag {name} 已存在")
         self._ensure_dir(path.parent)
         path.write_text(content, "utf-8")
 
@@ -81,29 +99,16 @@ class CharacterKeepStore:
         path.unlink()
         return True
 
-    def load_cssaying(self) -> str:
-        if not self.cssaying_path.exists():
-            raise FileNotFoundError(f"缺少提示词文件：{self.cssaying_path}")
-        return self.cssaying_path.read_text("utf-8")
-
-
 def extract_nai_tag(content: str) -> str | None:
     if not content:
         return None
     match = TAG_BLOCK_PATTERN.search(content)
     if match:
         return match.group(1).strip()
-    return None
+    # New role-library entries are stored as plain NovelAI tags. This fallback
+    # also keeps old ``nn=`` entries usable without a migration step.
+    return content.strip() or None
 
 
 def replace_nai_tag(content: str, new_tag: str) -> tuple[str, bool]:
-    if not content:
-        return new_tag.strip(), False
-    if TAG_BLOCK_PATTERN.search(content):
-        replaced = TAG_BLOCK_PATTERN.sub(
-            lambda _m: f"<tag>\n{new_tag.strip()}\n</tag>",
-            content,
-            count=1,
-        )
-        return replaced, True
-    return new_tag.strip(), False
+    return new_tag.strip(), bool(content.strip())

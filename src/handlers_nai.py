@@ -189,17 +189,18 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
 
     description = other_params.get("ds", "")
 
-    cs_content_parts: list[str] = []
+    cs_tag_parts: list[str] = []
     if cs_names:
         for cs_name in cs_names:
             exists = await asyncio.to_thread(plugin.cs_store.exists, user_id, cs_name)
             if not exists:
-                yield event.plain_result(f"角色保持 {cs_name} 不存在，请先使用 /cs 创建")
+                yield event.plain_result(f"角色Tag {cs_name} 不存在，请先使用 /cs添加 创建")
                 return
-            cs_content_parts.append(
-                await asyncio.to_thread(plugin.cs_store.read, user_id, cs_name)
+            character_tag = await asyncio.to_thread(
+                plugin.cs_store.read_tag, user_id, cs_name
             )
-    cs_content = "\n\n".join(cs_content_parts)
+            if character_tag:
+                cs_tag_parts.append(character_tag)
 
     reply_text = plugin._get_reply_text(event)
     if reply_text:
@@ -330,11 +331,14 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
                             character_keep_image=character_keep_image,
                             vision_images=vision_images,
                             skip_default_prompts=bool(preset_contents),
-                            extra_system_prompt=cs_content,
                         )
 
                         if user_req is not None:
                             apply_explicit_overrides(req, user_req, explicit_ids, wrappers)
+                        if cs_tag_parts:
+                            req.tag = ", ".join(
+                                part for part in [req.tag, *cs_tag_parts] if part.strip()
+                            )
 
                         async def _do_generate():
                             nonlocal token

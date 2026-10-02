@@ -1,4 +1,0 @@
-Please complete the content within parentheses and single quotes according to the following format, leaving it blank if no prompts are provided: The user has given a character (character name). Please analyze this character (character name) based on the prompts or text provided by the user, and describe the character's appearance in NovelAI tag style format and English. The following is the character's appearance, which can be modified according to the context or user prompts. Enclose it in '</tag>':
-<tag>
- NovelAI tag style appearance prompts
-</tag>
