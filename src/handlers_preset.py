@@ -39,7 +39,15 @@ async def handle_preset_view(plugin, event) -> AsyncIterator:
         return
 
     title = args.split()[0]
-    preset = await asyncio.to_thread(plugin.preset_manager.get_preset, title)
+    owner_filter = (
+        None
+        if plugin._check_resource_admin(event)
+        or plugin.config.general.list_all_resources
+        else plugin._get_resource_owner(event)
+    )
+    preset = await asyncio.to_thread(
+        plugin.preset_manager.get_preset, title, owner_filter
+    )
 
     if preset is None:
         yield event.plain_result(f"预设 #{title} 不存在")

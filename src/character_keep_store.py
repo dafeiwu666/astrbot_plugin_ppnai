@@ -71,17 +71,41 @@ class CharacterKeepStore:
         content = self.read(user_id, name)
         return extract_nai_tag(content) or ""
 
-    def find_matching(self, user_id: str, query: str) -> list[tuple[str, str]]:
+    def resolve_tag(
+        self, user_id: str, name: str, *, include_all: bool = False
+    ) -> tuple[str, str] | None:
+        """Resolve a character tag, optionally searching other users' libraries.
+
+        The caller's own entry wins on name collisions. If no own entry exists,
+        the first matching owner in sorted ID order is used.
+        """
+        if self.exists(user_id, name):
+            return user_id, self.read_tag(user_id, name)
+        if not include_all:
+            return None
+        for owner_id in self.list_grouped():
+            if owner_id != user_id and self.exists(owner_id, name):
+                return owner_id, self.read_tag(owner_id, name)
+        return None
+
+    def find_matching(
+        self, user_id: str, query: str, *, include_all: bool = False
+    ) -> list[tuple[str, str]]:
         """Find saved character names mentioned in a query (case-insensitive)."""
         normalized_query = query.casefold()
         matches: list[tuple[int, str, str]] = []
-        for name in self.list_names(user_id):
+        names = set(self.list_names(user_id))
+        if include_all:
+            for owner_id, owner_names in self.list_grouped().items():
+                if owner_id != user_id:
+                    names.update(owner_names)
+        for name in names:
             position = normalized_query.find(name.casefold())
             if position < 0:
                 continue
-            tags = self.read_tag(user_id, name)
-            if tags:
-                matches.append((position, name, tags))
+            resolved = self.resolve_tag(user_id, name, include_all=include_all)
+            if resolved is not None and resolved[1]:
+                matches.append((position, name, resolved[1]))
         matches.sort(key=lambda match: (match[0], match[1]))
         return [(name, tags) for _, name, tags in matches]
 

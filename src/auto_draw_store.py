@@ -17,6 +17,8 @@ class AutoDrawSession(BaseModel):
     enabled: bool = True
     presets: list[str] = Field(default_factory=list)
     opener_user_id: str = ""
+    resource_owner_id: str = ""
+    allow_all_resources: bool = False
     cs_names: list[str] = Field(default_factory=list)
     i2i_image: str | None = None
     vibe_transfer_images: list[str] = Field(default_factory=list)

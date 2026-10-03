@@ -367,6 +367,7 @@ class STNaiGenerateImageTool(ConfigNeededTool):
     nai_command_handler_init: Any | None = None
     character_store_init: Any | None = None
     user_id_getter_init: Any | None = None
+    resource_admin_checker_init: Any | None = None
 
     def __post_init__(self):
         super().__post_init__()
@@ -437,6 +438,11 @@ class STNaiGenerateImageTool(ConfigNeededTool):
                     self.character_store_init.find_matching,
                     self.user_id_getter_init(event),
                     query,
+                    include_all=self.config.general.list_all_resources
+                    or (
+                        self.resource_admin_checker_init is not None
+                        and self.resource_admin_checker_init(event)
+                    ),
                 )
             except Exception as e:  # noqa: BLE001
                 logger.exception("Failed to search the character tag library")
@@ -551,6 +557,7 @@ class Plugin(Star):
                 nai_command_handler_init=self.cmd_nai,
                 character_store_init=self.cs_store,
                 user_id_getter_init=self._get_user_id,
+                resource_admin_checker_init=self._check_resource_admin,
             )
         )
 
@@ -747,14 +754,16 @@ class Plugin(Star):
         """从事件中获取用户ID"""
         return event.get_sender_id()
 
-    def _get_resource_owner(self, event: AstrMessageEvent) -> str:
+    def _get_resource_owner(
+        self, event: AstrMessageEvent, user_id: str | None = None
+    ) -> str:
         """Return a stable platform-qualified owner identifier for shared resources."""
         platform = getattr(event, "platform", None)
         getter = getattr(event, "get_platform_name", None)
         if callable(getter):
             platform = getter()
         platform = str(platform or "unknown")
-        return f"{platform}:{self._get_user_id(event)}"
+        return f"{platform}:{user_id or self._get_user_id(event)}"
     
     def _check_permission(self, event: AstrMessageEvent) -> bool:
         """检查是否是管理员"""
@@ -863,7 +872,7 @@ class Plugin(Star):
         self,
         event: AstrMessageEvent,
         is_whitelisted: bool = False,
-    ) -> tuple[Req, int, list[str], list[str]] | None:
+    ) -> tuple[Req, int, list[str], list[str], list[str]] | None:
         """解析命令参数，支持多预设
         
         预设格式：s1=xxx, s2=xxx, ...
@@ -881,6 +890,12 @@ class Plugin(Star):
         preset_numbers: list[int] = []  # 预设编号列表
         preset_names: list[str] = []
         cs_entries: dict[int, str] = {}
+        resource_owner_filter = (
+            None
+            if self._check_resource_admin(event)
+            or self.config.general.list_all_resources
+            else self._get_resource_owner(event)
+        )
         
         import re
         preset_pattern = re.compile(r'^s(\d+)$')
@@ -917,7 +932,12 @@ class Plugin(Star):
                     preset_num = int(match.group(1)) if match else 0
 
                 if preset_num:
-                    preset = await asyncio.to_thread(self.preset_manager.get_preset, value)
+                    preset_owner_filter = resource_owner_filter
+                    if value == (self.config.defaults.default_preset or "").strip():
+                        preset_owner_filter = None
+                    preset = await asyncio.to_thread(
+                        self.preset_manager.get_preset, value, preset_owner_filter
+                    )
                     if preset is None:
                         raise ValueError(f"预设 {value} 不存在，使用 nai预设列表 查看可用预设")
                     
@@ -950,6 +970,7 @@ class Plugin(Star):
         if not preset_numbers:
             default_name = (self.config.defaults.default_preset or "").strip()
             if default_name:
+                # The configured default preset is selected by the plugin owner.
                 default_preset = await asyncio.to_thread(
                     self.preset_manager.get_preset, default_name
                 )
@@ -1034,18 +1055,24 @@ class Plugin(Star):
         if max_n > 0 and batch_count > max_n:
             raise ValueError(f"参数 n 不能超过 {max_n}")
 
+        cs_resource_keys: list[str] = []
         if cs_entries:
             user_id = self._get_user_id(event)
             for cs_num, cs_name in sorted(cs_entries.items(), key=lambda x: x[0]):
-                exists = await asyncio.to_thread(self.cs_store.exists, user_id, cs_name)
-                if not exists:
-                    raise ValueError(f"角色Tag {cs_name} 不存在，请先使用 /cs添加 创建")
-                cs_tag = await asyncio.to_thread(
-                    self.cs_store.read_tag, user_id, cs_name,
+                resolved_tag = await asyncio.to_thread(
+                    self.cs_store.resolve_tag,
+                    user_id,
+                    cs_name,
+                    include_all=self.config.general.list_all_resources
+                    or self._check_resource_admin(event),
                 )
+                if resolved_tag is None:
+                    raise ValueError(f"角色Tag {cs_name} 不存在，请先使用 /cs添加 创建")
+                owner_id, cs_tag = resolved_tag
                 if not cs_tag:
                     raise ValueError(f"角色Tag {cs_name} 内容为空")
                 tag_parts.append(cs_tag)
+                cs_resource_keys.append(f"ck:{owner_id}:{cs_name}")
 
         # 构建最终参数字符串
         final_params: list[str] = []
@@ -1087,8 +1114,11 @@ class Plugin(Star):
             is_library_name = False
             try:
                 is_library_name = await asyncio.to_thread(
-                    self.image_library.exists,
+                    self.image_library.is_accessible,
                     value,
+                    self._get_resource_owner(event),
+                    self._check_resource_admin(event)
+                    or self.config.general.list_all_resources,
                 )
             except Exception:
                 is_library_name = False
@@ -1098,6 +1128,9 @@ class Plugin(Star):
                 data_uri = await asyncio.to_thread(
                     self.image_library.read_data_uri,
                     value,
+                    owner_id=self._get_resource_owner(event),
+                    allow_all=self._check_resource_admin(event)
+                    or self.config.general.list_all_resources,
                 )
                 parse_images.append(LibraryImage(data_uri))
             elif value.lower() in {"true", "1", "on", "yes", "是"}:
@@ -1109,11 +1142,14 @@ class Plugin(Star):
                 data_uri = await asyncio.to_thread(
                     self.image_library.read_data_uri,
                     value,
+                    owner_id=self._get_resource_owner(event),
+                    allow_all=self._check_resource_admin(event)
+                    or self.config.general.list_all_resources,
                 )
                 parse_images.append(LibraryImage(data_uri))
         parse_images.extend(source_images[source_index:])
         req = await parse_req(final_raw, parse_images, self.config, is_whitelisted)
-        return req, batch_count, preset_names, list(cs_entries.values())
+        return req, batch_count, preset_names, list(cs_entries.values()), cs_resource_keys
 
     # ========== 签到命令 ==========
     
@@ -1281,9 +1317,13 @@ class Plugin(Star):
             return
         try:
             image_bytes, _mime = await asyncio.to_thread(
-                self.image_library.read_bytes, name
+                self.image_library.read_bytes,
+                name,
+                owner_id=self._get_resource_owner(event),
+                allow_all=self._check_resource_admin(event)
+                or self.config.general.list_all_resources,
             )
-        except (FileNotFoundError, ValueError) as exc:
+        except (FileNotFoundError, PermissionError, ValueError) as exc:
             yield event.plain_result(str(exc))
             return
         preview = await asyncio.to_thread(

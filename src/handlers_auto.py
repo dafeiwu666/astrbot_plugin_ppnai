@@ -63,6 +63,7 @@ async def _enable_auto_draw(
 ) -> tuple[bool, str]:
     umo = event.unified_msg_origin
     user_id = plugin._get_user_id(event)
+    resource_owner_id = plugin._get_resource_owner(event, user_id)
     preset_names, _other_params, cs_names, image_params = (
         plugin._parse_presets_from_params(raw_input)
     )
@@ -87,15 +88,31 @@ async def _enable_auto_draw(
 
     preset_contents: list[str] = []
     for preset_name in preset_names:
-        preset = await asyncio.to_thread(plugin.preset_manager.get_preset, preset_name)
+        is_configured_default = preset_name == (
+            plugin.config.defaults.default_preset or ""
+        ).strip()
+        preset_owner_filter = None if (
+            plugin._check_resource_admin(event)
+            or plugin.config.general.list_all_resources
+            or is_configured_default
+        ) else resource_owner_id
+        preset = await asyncio.to_thread(
+            plugin.preset_manager.get_preset, preset_name, preset_owner_filter
+        )
         if preset is None:
             return False, f"预设 {preset_name} 不存在，使用 nai预设列表 查看可用预设"
         preset_contents.append(preset.content)
 
     if cs_names:
         for cs_name in cs_names:
-            exists = await asyncio.to_thread(plugin.cs_store.exists, user_id, cs_name)
-            if not exists:
+            resolved_tag = await asyncio.to_thread(
+                plugin.cs_store.resolve_tag,
+                user_id,
+                cs_name,
+                include_all=plugin.config.general.list_all_resources
+                or plugin._check_resource_admin(event),
+            )
+            if resolved_tag is None:
                 return False, f"角色Tag {cs_name} 不存在，请先使用 /cs添加 创建"
 
     uploaded_images = _collect_images_with_replies(event.message_obj.message)
@@ -104,6 +121,9 @@ async def _enable_auto_draw(
             [*image_params, *iter_key_values(preset_contents)],
             uploaded_images,
             plugin.image_library,
+            owner_id=resource_owner_id,
+            allow_all=plugin._check_resource_admin(event)
+            or plugin.config.general.list_all_resources,
         )
     except Exception as e:  # noqa: BLE001
         return False, f"图片参数解析失败：{format_readable_error(e)}"
@@ -117,6 +137,9 @@ async def _enable_auto_draw(
         "enabled": True,
         "presets": preset_names,
         "opener_user_id": user_id,
+        "resource_owner_id": resource_owner_id,
+        "allow_all_resources": plugin._check_resource_admin(event)
+        or plugin.config.general.list_all_resources,
         "cs_names": cs_names,
         "i2i_image": resolved_images.i2i_image,
         "vibe_transfer_images": resolved_images.vibe_transfer_images,
@@ -263,10 +286,28 @@ async def handle_llm_response_auto_draw(plugin, event, resp: LLMResponse):
             return
 
     preset_contents: list[str] = []
+    resource_owner_id = auto_info.get("resource_owner_id") or plugin._get_resource_owner(
+        event, opener_user_id
+    )
     for preset_name in presets:
-        preset = await asyncio.to_thread(plugin.preset_manager.get_preset, preset_name)
-        if preset:
-            preset_contents.append(preset.content)
+        is_configured_default = preset_name == (
+            plugin.config.defaults.default_preset or ""
+        ).strip()
+        preset_owner_filter = None if (
+            auto_info.get("allow_all_resources", plugin.config.general.list_all_resources)
+            or is_configured_default
+        ) else resource_owner_id
+        preset = await asyncio.to_thread(
+            plugin.preset_manager.get_preset, preset_name, preset_owner_filter
+        )
+        if preset is None:
+            await event.send(
+                event.plain_result(
+                    f"⚠️ 自动画图无法使用预设 {preset_name}：资源不存在或无权访问"
+                )
+            )
+            return
+        preset_contents.append(preset.content)
 
     logger.debug(
         f"[nai] Auto draw: generating from response ({len(ai_response)} chars), "
@@ -371,29 +412,35 @@ async def _auto_draw_generate(
                 vision_images = auto_info.get("vision_images")
 
                 cs_tag_parts: list[str] = []
+                cs_resource_keys: list[str] = []
                 if cs_names:
                     for cs_name in cs_names:
-                        exists = await asyncio.to_thread(
-                            plugin.cs_store.exists, opener_user_id, cs_name
+                        resolved_tag = await asyncio.to_thread(
+                            plugin.cs_store.resolve_tag,
+                            opener_user_id,
+                            cs_name,
+                            include_all=auto_info.get(
+                                "allow_all_resources",
+                                plugin.config.general.list_all_resources,
+                            ),
                         )
-                        if not exists:
+                        if resolved_tag is None:
                             await event.send(
                                 event.plain_result(
                                     f"🎨 自动画图失败：角色Tag {cs_name} 不存在"
                                 )
                             )
                             return
-                        character_tag = await asyncio.to_thread(
-                            plugin.cs_store.read_tag, opener_user_id, cs_name
-                        )
+                        owner_id, character_tag = resolved_tag
                         if character_tag:
                             cs_tag_parts.append(character_tag)
+                            cs_resource_keys.append(f"ck:{owner_id}:{cs_name}")
 
                 full_parts = list(reversed(preset_contents)) + [ai_response_with_prefix]
                 full_instructions = "\n\n".join(full_parts)
                 resource_keys = [
                     *(f"preset:{name}" for name in presets),
-                    *(f"ck:{opener_user_id}:{name}" for name in cs_names),
+                    *cs_resource_keys,
                     *auto_info.get("resource_keys", []),
                 ]
 

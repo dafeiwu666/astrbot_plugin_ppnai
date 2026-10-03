@@ -63,6 +63,13 @@ class ImageLibraryManager:
             raise FileNotFoundError(f"图库图片不存在: {name}")
         return entry.get("owner_id", "system")
 
+    def is_accessible(self, name: str, owner_id: str, allow_all: bool = False) -> bool:
+        entry = self._load().get(self.validate_name(name))
+        if entry is None:
+            return False
+        resource_owner = entry.get("owner_id", "system")
+        return allow_all or resource_owner in {owner_id, "system"}
+
     def add(
         self,
         name: str,
@@ -112,23 +119,44 @@ class ImageLibraryManager:
         grouped: dict[str, list[str]] = {}
         for name, entry in self._load().items():
             owner = entry.get("owner_id", "system")
-            if owner_id is not None and owner != owner_id:
+            if owner_id is not None and owner not in {owner_id, "system"}:
                 continue
             grouped.setdefault(owner, []).append(name)
         return {key: sorted(value) for key, value in sorted(grouped.items())}
 
-    def read_data_uri(self, name: str) -> str:
+    def read_data_uri(
+        self,
+        name: str,
+        *,
+        owner_id: str | None = None,
+        allow_all: bool = False,
+    ) -> str:
         entry = self._load().get(self.validate_name(name))
         if entry is None:
             raise FileNotFoundError(f"图库图片不存在: {name}")
+        resource_owner = entry.get("owner_id", "system")
+        if (
+            owner_id is not None
+            and not allow_all
+            and resource_owner not in {owner_id, "system"}
+        ):
+            raise PermissionError(f"无权使用其他用户的图库图片: {name}")
         path = self.image_dir / entry["file"]
         if not path.is_file():
             raise FileNotFoundError(f"图库图片文件缺失: {name}")
         mime = entry.get("mime", "image/jpeg")
         return f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
 
-    def read_bytes(self, name: str) -> tuple[bytes, str]:
-        data_uri = self.read_data_uri(name)
+    def read_bytes(
+        self,
+        name: str,
+        *,
+        owner_id: str | None = None,
+        allow_all: bool = False,
+    ) -> tuple[bytes, str]:
+        data_uri = self.read_data_uri(
+            name, owner_id=owner_id, allow_all=allow_all
+        )
         header, encoded = data_uri.split(",", 1)
         return base64.b64decode(encoded), header.split(";", 1)[0].removeprefix("data:")
 

@@ -92,9 +92,9 @@ class GeneralConfig(BaseModel):
     list_all_resources: Annotated[
         bool,
         Field(
-            description="允许普通用户查看全部资源",
+            description="允许普通用户查看并使用全部资源",
             json_schema_extra={
-                "hint": "开启后普通用户的预设、图库和角色 Tag 库列表会展示所有用户资源，并按平台和用户 ID 分组。",
+                "hint": "开启后普通用户可查看并在绘图中使用所有用户的预设、图片图库和角色 Tag 库资源；列表按所有者分组。配置键名 list_all_resources 为兼容旧版本保留。",
             },
         ),
     ] = False

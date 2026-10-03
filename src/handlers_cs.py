@@ -118,13 +118,20 @@ async def handle_scs(plugin, event) -> AsyncIterator:
         yield event.plain_result(result)
         return
 
-    if not await asyncio.to_thread(plugin.cs_store.exists, target_user, name):
+    resolved_tag = await asyncio.to_thread(
+        plugin.cs_store.resolve_tag,
+        target_user,
+        name,
+        include_all=plugin.config.general.list_all_resources
+        or plugin._check_resource_admin(event),
+    )
+    if resolved_tag is None:
         yield event.plain_result(f"角色Tag {name} 不存在")
         return
 
-    content = await asyncio.to_thread(plugin.cs_store.read_tag, target_user, name)
+    owner_id, content = resolved_tag
     preview = await asyncio.to_thread(
-        plugin.preview_manager.read, f"ck:{target_user}:{name}"
+        plugin.preview_manager.read, f"ck:{owner_id}:{name}"
     )
     node_content = [Plain(f"📝 角色Tag：{name}\n\n{content}")]
     if preview is not None:

@@ -60,7 +60,7 @@
 | `curtain.*` | 帷幕合成参数。 | ❌ 否 |
 | `quark.*` | 夸克分享链接有效期、目标目录和清理设置。分享开关在 `general.send_quark_link`。 | ❌ 否 |
 | `general.public_resources` | 预设、图库、角色 Tag 库是否对所有人公开。 | ❌ 否 |
-| `general.allow_view_all` | 是否允许普通用户查看全部资源（用于保护隐私）。 | ❌ 否 |
+| `general.list_all_resources` | 是否允许普通用户查看并在绘图中使用其他用户的预设、图片图库和角色 Tag 库；关闭时只显示/使用本人资源（系统资源及管理员设置的默认预设除外）。 | ❌ 否 |
 | `request.proxy_url` | 画图接口（如 image.novelai.net）的代理地址。非海外机器必填。支持 `http://`、`https://`、`socks5://` 等。 | ❌ 否 |
 | `request.tokens` | **授权 Token 列表**。请使用官网获取的 `pst-` 开头的 Token，支持多 Token 轮询。 | ✅ 是 |
 | `request.opus_free_mode` | **Opus 免费模式**。开启后强制限制图片尺寸和步数，Opus 账号不扣点数。 | ❌ 否 |

@@ -190,17 +190,23 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
     description = other_params.get("ds", "")
 
     cs_tag_parts: list[str] = []
+    cs_resource_keys: list[str] = []
     if cs_names:
         for cs_name in cs_names:
-            exists = await asyncio.to_thread(plugin.cs_store.exists, user_id, cs_name)
-            if not exists:
+            resolved_tag = await asyncio.to_thread(
+                plugin.cs_store.resolve_tag,
+                user_id,
+                cs_name,
+                include_all=plugin.config.general.list_all_resources
+                or plugin._check_resource_admin(event),
+            )
+            if resolved_tag is None:
                 yield event.plain_result(f"角色Tag {cs_name} 不存在，请先使用 /cs添加 创建")
                 return
-            character_tag = await asyncio.to_thread(
-                plugin.cs_store.read_tag, user_id, cs_name
-            )
+            owner_id, character_tag = resolved_tag
             if character_tag:
                 cs_tag_parts.append(character_tag)
+                cs_resource_keys.append(f"ck:{owner_id}:{cs_name}")
 
     reply_text = plugin._get_reply_text(event)
     if reply_text:
@@ -210,8 +216,18 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
             description = f"参考：{reply_text}"
 
     preset_contents: list[str] = []
+    preset_owner_filter = (
+        None
+        if plugin._check_resource_admin(event)
+        or plugin.config.general.list_all_resources
+        else plugin._get_resource_owner(event)
+    )
     for preset_name in preset_names:
-        preset = plugin.preset_manager.get_preset(preset_name)
+        is_configured_default = preset_name == (
+            plugin.config.defaults.default_preset or ""
+        ).strip()
+        owner_filter = None if is_configured_default else preset_owner_filter
+        preset = plugin.preset_manager.get_preset(preset_name, owner_filter)
         if preset is None:
             yield event.plain_result(f"预设 {preset_name} 不存在，使用 nai预设列表 查看可用预设")
             return
@@ -223,6 +239,9 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
             [*image_params, *iter_key_values(preset_contents)],
             uploaded_images,
             plugin.image_library,
+            owner_id=plugin._get_resource_owner(event),
+            allow_all=plugin._check_resource_admin(event)
+            or plugin.config.general.list_all_resources,
         )
     except Exception as e:  # noqa: BLE001
         yield event.plain_result(f"图片参数解析失败：{format_readable_error(e)}")
@@ -281,7 +300,7 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
     full_description = "\n\n".join(full_description_parts)
     resource_keys = [
         *(f"preset:{name}" for name in preset_names),
-        *(f"ck:{user_id}:{name}" for name in cs_names),
+        *cs_resource_keys,
         *resolved_images.resource_keys,
     ]
 
@@ -479,11 +498,11 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
             yield event.plain_result(help_msg)
         return
 
-    req, batch_count, preset_names, cs_names = parsed
+    req, batch_count, preset_names, cs_names, cs_resource_keys = parsed
     user_id = plugin._get_user_id(event)
     resource_keys = [
         *(f"preset:{name}" for name in preset_names),
-        *(f"ck:{user_id}:{name}" for name in cs_names),
+        *cs_resource_keys,
     ]
     for line in event.message_str.splitlines():
         if "=" not in line:

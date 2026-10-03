@@ -65,6 +65,9 @@ async def resolve_image_params(
     params: Iterable[tuple[str, str]],
     images: Iterable[Image],
     image_library: Any | None = None,
+    *,
+    owner_id: str | None = None,
+    allow_all: bool = True,
 ) -> ResolvedImageParams:
     """Resolve i2i/vibe-transfer/character-keep images in /nai-compatible order."""
     image_queue = list(images)
@@ -79,7 +82,14 @@ async def resolve_image_params(
         if image_library is None:
             return False
         try:
-            return await asyncio.to_thread(image_library.exists, value.strip())
+            if owner_id is None:
+                return await asyncio.to_thread(image_library.exists, value.strip())
+            return await asyncio.to_thread(
+                image_library.is_accessible,
+                value.strip(),
+                owner_id,
+                allow_all,
+            )
         except (OSError, RuntimeError, ValueError):
             return False
 
@@ -97,7 +107,12 @@ async def resolve_image_params(
         library_name = value.strip()
         if await is_library_name(library_name):
             result.resource_keys.append(f"image:{library_name}")
-            return await asyncio.to_thread(image_library.read_data_uri, library_name)
+            return await asyncio.to_thread(
+                image_library.read_data_uri,
+                library_name,
+                owner_id=owner_id,
+                allow_all=allow_all,
+            )
 
         if normalized in {"true", "1", "on", "yes", "是"}:
             return await resolve_image(pop_image(param_name))

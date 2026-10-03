@@ -68,15 +68,24 @@ class PresetManager:
     def list_grouped(self, owner_id: str | None = None) -> dict[str, list[str]]:
         grouped: dict[str, list[str]] = {}
         for title, preset in self._load().presets.items():
-            if owner_id is not None and preset.owner_id != owner_id:
+            if owner_id is not None and preset.owner_id not in {owner_id, "system"}:
                 continue
             grouped.setdefault(preset.owner_id, []).append(title)
         return {key: sorted(value) for key, value in sorted(grouped.items())}
     
-    def get_preset(self, title: str) -> Preset | None:
-        """获取指定预设，不存在返回 None"""
+    def get_preset(
+        self, title: str, owner_id: str | None = None
+    ) -> Preset | None:
+        """获取预设；指定 owner_id 时只允许读取本人或系统预设。"""
         store = self._load()
-        return store.presets.get(title)
+        preset = store.presets.get(title)
+        if (
+            preset is not None
+            and owner_id is not None
+            and preset.owner_id not in {owner_id, "system"}
+        ):
+            return None
+        return preset
     
     def add_preset(self, title: str, content: str, owner_id: str = "system") -> bool:
         """
