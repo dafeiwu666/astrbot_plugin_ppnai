@@ -218,7 +218,7 @@ cs1=夕立
 cs2=樱羽艾玛
 ```
 
-AI 绘图工具会从当前用户角色库检索原始请求、绘图描述和“人物Tag预留库”中的名称；命中后将其转换为 `csN=名称` 参数交给 `/nai`，由 `/nai` 读取并追加库内原始 Tag。例如“画一张夕立”会命中夕立条目；多名角色会添加多个 `csN` 参数。
+AI 绘图工具不会自动添加 `csN` 或替 AI 决定是否使用角色。智能体可先调用 `stnai_search_character_tags`，将用户原始请求作为 `query`；检索结果会返回可放入绘图 description 的“人物Tag预留库”区块及 `角色名:角色库原始Tag` 行，例如 `夕立:yuudachi kai ni (Kancolle)`。之后由 AI 自行决定是否将原始 Tag 纳入绘图 description/`tag`，再调用 `stnai_generate_image`。命中的 Tag 不会被插件自动改写、追加或转成 `csN`。
 
 此 CS 文本 Tag 库不同于 NovelAI 图片角色保持参数 `character_keep=图库名称`。
 

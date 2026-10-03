@@ -346,6 +346,74 @@ class STNaiGenerateImageArgs(BaseModel):
     ]
 
 
+@model_with_model_config(ConfigDict(extra="forbid"))
+class STNaiSearchCharacterTagsArgs(BaseModel):
+    query: Annotated[
+        str,
+        Field(
+            description=(
+                "The user's original request or a phrase containing character names "
+                "to search in the role tag library."
+            )
+        ),
+    ]
+
+
+@dataclass(config=ConfigDict(arbitrary_types_allowed=True))
+class STNaiSearchCharacterTagsTool(ConfigNeededTool):
+    name: str = "stnai_search_character_tags"
+    description: str = (
+        "Search the current user's NovelAI character tag library by names found in "
+        "the user's original request. Returns a description block headed "
+        "人物Tag预留库 with exact "
+        "角色名:原始Tag lines. Call this before composing image tags when a named "
+        "character may exist in the library. Do not add csN selectors automatically."
+    )
+    parameters: dict = Field(default_factory=dict)
+    character_store_init: Any | None = None
+    user_id_getter_init: Any | None = None
+    resource_admin_checker_init: Any | None = None
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.parameters = STNaiSearchCharacterTagsArgs.model_json_schema()
+
+    async def call(
+        self,
+        context: ContextWrapper[AstrAgentContext],
+        **kwargs,
+    ) -> ToolExecResult:
+        try:
+            args = STNaiSearchCharacterTagsArgs.model_validate(kwargs)
+        except Exception as exc:  # noqa: BLE001
+            return format_readable_error(exc)
+
+        if self.character_store_init is None or self.user_id_getter_init is None:
+            return "角色 Tag 库检索不可用。"
+
+        _, event = _unwrap_tool_context(context)
+        include_all = self.config.general.list_all_resources or (
+            self.resource_admin_checker_init is not None
+            and self.resource_admin_checker_init(event)
+        )
+        try:
+            matches = await asyncio.to_thread(
+                self.character_store_init.find_matching,
+                self.user_id_getter_init(event),
+                args.query,
+                include_all=include_all,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to search the character tag library")
+            return format_readable_error(exc)
+
+        if not matches:
+            return "description 中的人物Tag预留库：未命中角色。"
+        return "description 中的人物Tag预留库：\n" + "\n".join(
+            f"{name}:{tags}" for name, tags in matches
+        )
+
+
 @dataclass(config=ConfigDict(arbitrary_types_allowed=True))
 class STNaiGenerateImageTool(ConfigNeededTool):
     name: str = "stnai_generate_image"
@@ -358,16 +426,14 @@ class STNaiGenerateImageTool(ConfigNeededTool):
     禁用词汇: 禁止输出 masterpiece, best quality, highres 等质量词
     Cosplay规则: 格式为 人物名 (作品名) (cosplay)，禁止直接添加单个cosplay tag
     自然语言: 复杂动作或细节难以用tag描述时，可直接嵌入英文短句描述，需详尽描述各类动作细节甚至一小片花纹。
+    角色库: 生成角色Tag前，先调用 stnai_search_character_tags 查询用户原始请求；检索工具会返回可放入 description 的“角色名:角色库原始Tag”区块。AI 自行决定如何将原始Tag纳入绘图description/tag，Tag必须保持原样。不要自动生成 csN 选择器。
 输出模板:
     /nai tag=<主体及人物tag>, <动作姿态tag>, <服装细节tag>, <场景与环境tag>(如前有具体人名则不写服装和人物外貌细节，改为各种动作姿态。)
     size=横图/竖图/方图（默认不写size）
-    人物Tag预留库：根据用户原始请求检索当前用户的角色库；命中时按“角色名:角色库原始Tag”列出，Tag必须保持原样。工具会把命中角色作为 csN 参数交给 /nai。"""
+    人物Tag预留库：检索结果由 stnai_search_character_tags 返回，AI自行决定是否纳入绘图description/tag。"""
     parameters: dict = Field(default_factory=dict)
     # Runtime-only callback; it is not exposed in the public tool schema.
     nai_command_handler_init: Any | None = None
-    character_store_init: Any | None = None
-    user_id_getter_init: Any | None = None
-    resource_admin_checker_init: Any | None = None
 
     def __post_init__(self):
         super().__post_init__()
@@ -402,18 +468,9 @@ class STNaiGenerateImageTool(ConfigNeededTool):
             command_body = "\n".join(lines).strip()
 
         command_lines: list[str] = []
-        reserved_character_names: list[str] = []
-        in_character_reserve = False
         for line in command_body.splitlines():
             line = line.strip()
             if not line:
-                continue
-            if "人物Tag预留库" in line:
-                in_character_reserve = True
-                continue
-            if in_character_reserve:
-                if ":" in line and "=" not in line:
-                    reserved_character_names.append(line.split(":", 1)[0].strip())
                 continue
             if line in {"/nai", "nai"}:
                 continue
@@ -428,51 +485,6 @@ class STNaiGenerateImageTool(ConfigNeededTool):
 
         if not command_lines:
             return "请提供有效的 /nai 参数。"
-
-        if self.character_store_init is not None and self.user_id_getter_init is not None:
-            query = "\n".join(
-                [event.message_str, command_body, *reserved_character_names],
-            )
-            try:
-                matches = await asyncio.to_thread(
-                    self.character_store_init.find_matching,
-                    self.user_id_getter_init(event),
-                    query,
-                    include_all=self.config.general.list_all_resources
-                    or (
-                        self.resource_admin_checker_init is not None
-                        and self.resource_admin_checker_init(event)
-                    ),
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.exception("Failed to search the character tag library")
-                return format_readable_error(e)
-            selected_names: set[str] = set()
-            occupied_selectors: set[str] = set()
-            for line in command_lines:
-                key, separator, value = line.partition("=")
-                normalized_key = key.strip().lower()
-                if not separator:
-                    continue
-                if normalized_key == "cs" or (
-                    normalized_key.startswith("cs")
-                    and normalized_key[2:].isdigit()
-                ):
-                    selected_names.add(value.strip())
-                    occupied_selectors.add(
-                        "cs1" if normalized_key == "cs" else normalized_key
-                    )
-
-            next_index = 1
-            for name, _ in matches:
-                if name in selected_names:
-                    continue
-                while f"cs{next_index}" in occupied_selectors:
-                    next_index += 1
-                command_lines.append(f"cs{next_index}={name}")
-                selected_names.add(name)
-                occupied_selectors.add(f"cs{next_index}")
-                next_index += 1
 
         original_message = event.message_str
         event.message_str = f"{COMMAND}\n" + "\n".join(command_lines)
@@ -552,12 +564,17 @@ class Plugin(Star):
         self._queue = get_shared_queue()
 
         self.context.add_llm_tools(
-            STNaiGenerateImageTool(
+            STNaiSearchCharacterTagsTool(
                 config_init=self.config,
-                nai_command_handler_init=self.cmd_nai,
                 character_store_init=self.cs_store,
                 user_id_getter_init=self._get_user_id,
                 resource_admin_checker_init=self._check_resource_admin,
+            )
+        )
+        self.context.add_llm_tools(
+            STNaiGenerateImageTool(
+                config_init=self.config,
+                nai_command_handler_init=self.cmd_nai,
             )
         )
 
