@@ -19,10 +19,11 @@ def _path() -> Path:
     return StarTools.get_data_dir("astrbot_plugin_ppnai") / _PATH
 
 
-def _read_sync(token: str, proxy: str) -> dict[str, Any] | None:
+def _read_sync(token: str, base_url: str, proxy_url: str) -> dict[str, Any] | None:
     try:
-        with httpx.Client(proxy=proxy or None, timeout=20, trust_env=False) as client:
-            response = client.get("https://image.novelai.net/user/subscription", headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
+        endpoint = f"{base_url.rstrip('/')}/user/subscription"
+        with httpx.Client(proxy=proxy_url or None, timeout=20, trust_env=False) as client:
+            response = client.get(endpoint, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
         if response.status_code != 200:
             return None
         data = response.json()
@@ -33,7 +34,12 @@ def _read_sync(token: str, proxy: str) -> dict[str, Any] | None:
 
 
 async def read_balance(plugin, token: str) -> dict[str, Any] | None:
-    return await asyncio.to_thread(_read_sync, token, getattr(plugin.config.request, "proxy", ""))
+    request_config = plugin.config.request
+    base_url = str(
+        getattr(request_config, "base_url", "") or "https://image.novelai.net"
+    )
+    proxy_url = str(getattr(request_config, "proxy_url", "") or "")
+    return await asyncio.to_thread(_read_sync, token, base_url, proxy_url)
 
 
 def official_rule(req, tier: int | None, batch_count: int = 1) -> str:
