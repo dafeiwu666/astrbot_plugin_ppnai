@@ -6,11 +6,36 @@ These are extracted from main.py to keep Plugin wiring lightweight.
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import AsyncIterator
 
 import httpx
 
 from .anlas_audit import recent_entries
+
+
+def _format_opus_usage(data: dict) -> str:
+    if data.get("active") is not True:
+        return "生图额度剩余：不可用（订阅未激活）"
+    tier = data.get("tier")
+    if not isinstance(tier, int) or isinstance(tier, bool) or tier < 3:
+        return "生图额度剩余：不适用（非 Opus 订阅）"
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        return "生图额度剩余：官方未返回有效额度"
+    if usage.get("isNegative") is True:
+        return "生图额度剩余：0%（额度已透支）"
+    percent = usage.get("percent")
+    if (
+        not isinstance(percent, (int, float))
+        or isinstance(percent, bool)
+        or not math.isfinite(percent)
+    ):
+        return "生图额度剩余：官方未返回有效额度"
+    remaining = max(0, percent)
+    visible = str(int(remaining)) if remaining == int(remaining) else str(remaining)
+    return f"生图额度剩余：{visible}%"
+
 
 async def handle_nai_accounts(plugin, event) -> AsyncIterator:
     if not plugin._check_permission(event):
@@ -23,17 +48,22 @@ async def handle_nai_accounts(plugin, event) -> AsyncIterator:
 
     async def query(index: int, token: str) -> str:
         try:
-            async with httpx.AsyncClient(proxy=getattr(plugin.config.request, "proxy", "") or None, timeout=20, trust_env=False) as client:
+            async with httpx.AsyncClient(proxy=getattr(plugin.config.request, "proxy_url", "") or None, timeout=20, trust_env=False) as client:
                 response = await client.get("https://image.novelai.net/user/subscription", headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
             response.raise_for_status()
             data = response.json()
             steps = data.get("trainingStepsLeft") or {}
             tier = {0: "Paper", 1: "Tablet", 2: "Scroll", 3: "Opus"}.get(data.get("tier"), str(data.get("tier", "未知")))
-            return f"账号 {index}：{tier}，订阅{'有效' if data.get('active') else '未激活'}\nAnlas：订阅 {steps.get('fixedTrainingStepsLeft', '未知')}，购买 {steps.get('purchasedTrainingSteps', '未知')}"
+            return (
+                f"账号 {index}：{tier}，订阅{'有效' if data.get('active') else '未激活'}\n"
+                f"{_format_opus_usage(data)}\n"
+                f"Anlas：订阅 {steps.get('fixedTrainingStepsLeft', '未知')}，购买 {steps.get('purchasedTrainingSteps', '未知')}"
+            )
         except Exception as exc:
             return f"账号 {index}：查询失败（{type(exc).__name__}）"
 
-    yield event.plain_result("NovelAI 账户状态：\n" + "\n\n".join(await asyncio.gather(*(query(i, token) for i, token in enumerate(tokens, 1)))))
+    accounts = await asyncio.gather(*(query(i, token) for i, token in enumerate(tokens, 1)))
+    yield event.plain_result("NovelAI 账户状态：\n" + "\n\n".join(accounts))
 
 
 async def handle_anlas_audit(plugin, event) -> AsyncIterator:
