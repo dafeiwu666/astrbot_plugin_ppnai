@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .image_library import LibraryImage
+from .image_params import character_keep_key, character_keep_param, is_character_keep_source
 from .models import Req
 from .params import parse_req, req_model_assembler
 
@@ -46,6 +47,8 @@ def _extract_params_from_text(text: str, treat_non_kv_as_tag: bool) -> list[tupl
 
 def _canon_factory(appliers_map):
     def canon(k: str) -> str | None:
+        if reference_param := character_keep_param(k):
+            return character_keep_key(*reference_param)
         infos = appliers_map.get(k)
         return infos[0].id if infos else None
 
@@ -232,20 +235,21 @@ async def parse_llm_overrides(
     merged_raw: str,
     config: Config,
     is_whitelisted: bool,
-    character_keep_image: str | None,
+    character_keep_images: dict[int, str],
 ) -> Req | None:
     blocked_keys = {
         "i2i", "vibe_transfer", "vibe_transfer_info_extract", "vibe_transfer_ref_strength",
-        "character_keep", "QR", "QK", "qr", "qk",
+        "QR", "QK", "qr", "qk",
     }
     lines = [
         line for line in merged_raw.splitlines()
-        if line.partition("=")[0] not in blocked_keys
+        if (key := line.partition("=")[0]) not in blocked_keys
+        and not is_character_keep_source(key)
     ]
     images = []
-    if character_keep_image:
-        lines.append("character_keep=true")
-        images.append(LibraryImage(character_keep_image))
+    for index, image in sorted(character_keep_images.items()):
+        lines.append(f"{character_keep_key('character_keep', index)}=true")
+        images.append(LibraryImage(image))
     if not lines:
         return None
     return await parse_req("\n".join(lines), images, config, is_whitelisted)
@@ -324,6 +328,8 @@ def apply_explicit_overrides(
 
     if user_req.addition.character_keep:
         req.addition.character_keep = user_req.addition.character_keep
+    if user_req.addition.character_keep_extra:
+        req.addition.character_keep_extra = user_req.addition.character_keep_extra
 
     if (
         "role" in explicit_ids

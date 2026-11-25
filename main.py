@@ -86,9 +86,11 @@ from .src.character_keep_store import CharacterKeepStore
 from .src.params import _collect_images_with_replies, format_nai_parameter_reference, parse_req
 from .src.image_io import resolve_image
 from .src.image_params import (
-    CHARACTER_KEEP_MODE_ALIASES,
-    CHARACTER_KEEP_MODE_KEYS,
+    FALSE_VALUES,
     IMAGE_PARAM_KEYS,
+    character_keep_key,
+    character_keep_param,
+    is_character_keep_source,
     with_implicit_character_keep,
 )
 from .src.user_manager import UserManager
@@ -1059,8 +1061,8 @@ class Plugin(Star):
         
         for params in all_params_groups:
             for key, value in params:
-                if key in CHARACTER_KEEP_MODE_ALIASES:
-                    key = "character_keep_mode"
+                if reference_param := character_keep_param(key):
+                    key = character_keep_key(*reference_param)
                 if key == 'tag':
                     tag_parts.append(value)
                 elif key in ('negative', '反向提示词'):
@@ -1153,7 +1155,11 @@ class Plugin(Star):
             if "=" not in line:
                 continue
             key, value = (part.strip() for part in line.split("=", 1))
-            if key not in image_params or value.lower() in {"false", "0", "off", "关"}:
+            is_reference_source = is_character_keep_source(key)
+            if key not in image_params and not is_reference_source:
+                continue
+            false_values = FALSE_VALUES if is_reference_source else {"false", "0", "off", "关"}
+            if value.lower() in false_values:
                 continue
             is_library_name = False
             try:
@@ -1569,7 +1575,7 @@ class Plugin(Star):
                     if existing and existing != value:
                         raise ValueError(f"cs{cs_num} 重复且不一致")
                     cs_entries[cs_num] = value
-                elif key in IMAGE_PARAM_KEYS | CHARACTER_KEEP_MODE_KEYS:
+                elif key in IMAGE_PARAM_KEYS or character_keep_param(key):
                     image_params.append((key, value))
                 else:
                     other_params[key] = value

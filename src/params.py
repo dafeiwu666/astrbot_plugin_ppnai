@@ -59,7 +59,13 @@ from .models import (
     V5_CHARACTER_KEEP_MAX_STRENGTH,
 )
 from .image_io import resolve_image
-from .image_params import CHARACTER_KEEP_MODE_ALIASES, with_implicit_character_keep
+from .image_params import (
+    CHARACTER_KEEP_MODE_ALIASES,
+    CHARACTER_KEEP_STRENGTH_ALIASES,
+    FALSE_VALUES,
+    character_keep_param,
+    with_implicit_character_keep,
+)
 
 if TYPE_CHECKING:
     from .config import Config
@@ -103,6 +109,7 @@ class ParamApplierArgs(TypedDict, Generic[T, TC]):
     data: dict[str, Any]
     images: list[Image]
     ctx: TC
+    reference_index: int
 
 
 class ParamApplier(Protocol[T, TC]):
@@ -205,13 +212,17 @@ class ParamAssembler(Generic[T, TC]):
 
         appliers_map = self.to_appliers_map(appliers)
 
-        if k := next((x for x, _ in input_params if x not in set(appliers_map)), None):
-            raise KeyError(f"Unknown parameter key: {k}")
-
+        resolved_params = []
         for key, value in input_params:
-            for applier in appliers_map[key]:
+            param, reference_index = character_keep_param(key) or (key, 1)
+            if param not in appliers_map:
+                raise KeyError(f"Unknown parameter key: {key}")
+            resolved_params.append((appliers_map[param], value, reference_index))
+        for selected_appliers, value, reference_index in resolved_params:
+            for applier in selected_appliers:
                 await applier.applier(
-                    assembler=self, value=value, data=data, images=images, ctx=ctx
+                    assembler=self, value=value, data=data, images=images, ctx=ctx,
+                    reference_index=reference_index,
                 )
 
         for hook in self.end_process_hooks:
@@ -368,7 +379,7 @@ async def start_process(
     # 如果用户不是白名单，检查是否使用了白名单专用字段
     if not is_whitelisted:
         # 获取用户实际使用的参数键（去重）
-        used_keys = {key for key, _ in input_params}
+        used_keys = {(character_keep_param(key) or (key, 1))[0] for key, _ in input_params}
         
         # 检查是否使用了白名单专用字段
         for key in used_keys:
@@ -742,23 +753,33 @@ async def apply_role(value: str, data: dict[str, Any], ctx: "Config", **_):
     "character_keep",
     ["角色保持", "ck", "c_k"],
     lambda _: (
-        "NAI4.5 / NAI5 精准参考功能，使用一张参考图引导出图\n"
+        "NAI4.5 / NAI5 精准参考功能，支持按编号使用多张参考图\n"
         "\n附图时可写 `c_k=true` 或直接指定 `c_k_m`，图库图片用 `c_k=图库名称`\n"
-        "\n仅限引用一张图片\n"
+        "\n`c_k` 等同 `c_k1`。用 `c_k2` 等指定其他图片。"
+        "附图按已启用的参考编号从小到大分配，图库图不占用附图。\n"
         "\n相关参数：\n"
         "- `c_k_m` 可填 `ct`、`ctst`、`st`、`oft`，默认 `ctst`（角色和画风）\n"
         "- `c_k_s` 参考强度，省略时读取插件默认值设置"
     ),
 )
-async def apply_character_keep(value: str, data: dict[str, Any], images: list[Image], **_):
-    if value.lower() in ("false", "0", "off", "关"):
+async def apply_character_keep(
+    value: str, data: dict[str, Any], images: list[Image], reference_index: int, **_
+):
+    if value.lower() in FALSE_VALUES:
         return
-    reference = data.setdefault("addition", {}).setdefault("character_keep", {})
+    reference = _character_keep_slot(data, reference_index)
     if reference.get("base64"):
-        raise ValueError("Param `character_keep` already set")
+        raise ValueError(f"第 {reference_index} 张精准参考图已设置")
     if not images:
-        raise ValueError("精准参考需要上传图片、回复含图消息，或使用 c_k=图库名称")
+        raise ValueError(f"第 {reference_index} 张精准参考需要上传图片或指定图库图")
     reference["base64"] = await resolve_first_image(images)
+
+
+def _character_keep_slot(data: dict[str, Any], index: int) -> dict[str, Any]:
+    addition = data.setdefault("addition", {})
+    if index == 1:
+        return addition.setdefault("character_keep", {})
+    return addition.setdefault("character_keep_extra", {}).setdefault(index, {})
 
 
 @req_model_assembler.applier(
@@ -790,18 +811,13 @@ async def apply_character_keep_vibe(value: str, data: dict[str, Any], **_):
     CHARACTER_KEEP_MODE_ALIASES,
     lambda _: (
         "精准参考模式。省略 `c_k` 时，使用本条消息或被回复消息里的图片。\n"
+        "\n`c_k_m` 等同 `c_k_m1`。用 `c_k_m2` 等设置下一张图。\n"
         "\n`ct` / `character` 参考角色，`ctst` / `character&style` 参考角色和画风，"
         "`st` / `style` 参考画风，`oft` / `outfit` 参考服装（NAI5）\n"
         "\n省略时默认 `character&style`"
     ),
 )
-async def apply_character_keep_mode(value: str, data: dict[str, Any], ctx: "Config", **_):
-    if (
-        not data.get("_is_whitelisted")
-        and "character_keep_mode" in ctx.permission.whitelist_only_fields
-    ):
-        raise ValueError("参数 `character_keep_mode` 仅限白名单用户使用")
-
+async def apply_character_keep_mode(value: str, data: dict[str, Any], reference_index: int, **_):
     normalized = value.lower().replace(" ", "")
     mode = CHARACTER_KEEP_MODE_SHORTCUTS.get(normalized, normalized)
     modes = get_args(CharacterKeepMode)
@@ -811,20 +827,21 @@ async def apply_character_keep_mode(value: str, data: dict[str, Any], ctx: "Conf
         )
         raise ValueError(f"无效的参考模式 `{value}`，可选值为 {options}")
 
-    reference = data.setdefault("addition", {}).setdefault("character_keep", {})
+    reference = _character_keep_slot(data, reference_index)
     reference["mode"] = mode
 
 
 @req_model_assembler.applier(
     "character_keep_strength",
-    ["角色保持强度", "ck_strength", "c_k_s"],
+    CHARACTER_KEEP_STRENGTH_ALIASES,
     lambda ctx: (
         "参考强度，NAI4.5 为 0–1，NAI5 为 0–5。"
+        "`c_k_s` 等同 `c_k_s1`，用 `c_k_s2` 等设置下一张图。"
         f"省略时使用插件设置 `{ctx.defaults.character_keep_strength}`。"
         "值越大，生成结果越接近参考图。"
     ),
 )
-async def apply_character_keep_strength(value: str, data: dict[str, Any], **_):
+async def apply_character_keep_strength(value: str, data: dict[str, Any], reference_index: int, **_):
     try:
         strength = float(value)
     except ValueError as exc:
@@ -833,7 +850,7 @@ async def apply_character_keep_strength(value: str, data: dict[str, Any], **_):
     if not 0 <= strength <= V5_CHARACTER_KEEP_MAX_STRENGTH:
         raise ValueError("角色参考强度须在 0–5 之间，NAI4.5 的上限为 1")
     
-    reference = data.setdefault("addition", {}).setdefault("character_keep", {})
+    reference = _character_keep_slot(data, reference_index)
     reference["strength"] = strength
 
 def complete_defaults(data: dict[str, Any], ctx: "Config"):
@@ -857,18 +874,21 @@ def complete_defaults(data: dict[str, Any], ctx: "Config"):
             if "ref_strength" not in vibe_transfer:
                 vibe_transfer["ref_strength"] = ctx.defaults.vibe_transfer_ref_strength
 
-    # 填充 character_keep 默认值
-    if "addition" in data and "character_keep" in data["addition"]:
-        ck = data["addition"]["character_keep"]
-        if ck.get("base64"):
-            ck.setdefault("strength", ctx.defaults.character_keep_strength)
+    for _, reference in _character_keep_slots(data):
+        if reference.get("base64"):
+            reference.setdefault("strength", ctx.defaults.character_keep_strength)
+
+
+def _character_keep_slots(data: dict[str, Any]) -> list[tuple[int, dict[str, Any]]]:
+    addition = data.get("addition", {})
+    return [(1, addition.get("character_keep", {})), *addition.get("character_keep_extra", {}).items()]
 
 
 @req_model_assembler.end_process_hook
 async def end_process(data: dict[str, Any], ctx: "Config", **_):
-    reference = data.get("addition", {}).get("character_keep")
-    if reference and not reference.get("base64"):
-        raise ValueError("请使用 character_keep 参数引用图片")
+    for index, reference in _character_keep_slots(data):
+        if reference and not reference.get("base64"):
+            raise ValueError(f"请为第 {index} 张精准参考上传图片或指定图库图")
 
     # 获取前置/后置提示词（这些是临时存储在 data 中的）
     prepend_tag = data.pop("prepend_tag", "").strip()

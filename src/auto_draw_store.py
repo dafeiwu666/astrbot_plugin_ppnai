@@ -7,8 +7,9 @@ settings after the bot restarts.
 import asyncio
 import json
 from pathlib import Path
+from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from astrbot.api import logger
 
@@ -22,9 +23,20 @@ class AutoDrawSession(BaseModel):
     cs_names: list[str] = Field(default_factory=list)
     i2i_image: str | None = None
     vibe_transfer_images: list[str] = Field(default_factory=list)
-    character_keep_image: str | None = None
+    character_keep_images: dict[int, str] = Field(default_factory=dict)
     character_keep_overrides: str = ""
     vision_images: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def upgrade_character_keep_image(cls, data: Any) -> Any:
+        if (
+            isinstance(data, dict)
+            and data.get("character_keep_image")
+            and not data.get("character_keep_images")
+        ):
+            return {**data, "character_keep_images": {1: data["character_keep_image"]}}
+        return data
 
 
 class AutoDrawStore(BaseModel):

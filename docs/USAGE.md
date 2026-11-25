@@ -468,6 +468,22 @@ c_k_m=ctst
 
 随指令附上一张参考图，或回复含图消息。填写 `c_k_m` 时默认按 `c_k=true` 取图，显式写 `c_k=true` 也有效。使用图库时，加上 `c_k=图库名称`。
 
+#### 多张精准参考图
+
+```text
+nai
+model=nai5_full
+tag=1girl, standing
+c_k_m1=ct
+c_k_s1=2
+c_k_m2=st
+c_k_s2=0.8
+```
+
+任选一种方式提供图片。随指令附图或回复含图消息时，插件按已启用的编号从小到大取图。使用图库时写 `c_k1=图库名称`、`c_k2=图库名称`，也可以混用图库和附图，图库图不占用附件位置。
+
+`c_k`、`c_k_m`、`c_k_s` 对应第 1 张，分别等同于 `c_k1`、`c_k_m1`、`c_k_s1`。每张图有自己的模式和强度。只写某张图的模式或强度时，该编号默认使用附图。指令里的同编号参数可覆盖预设里的值。
+
 - `c_k_m=ctst` 或 `c_k_m=character&style` 同时参考角色和画风。
 - `c_k_m=ct` 或 `c_k_m=character` 仅参考角色。
 - `c_k_m=st` 或 `c_k_m=style` 仅参考画风。
@@ -660,9 +676,9 @@ role=D2|1girl, cool|bad anatomy
 | `QR` | 输出图片二维码 | `QR=true` 可单次开启；二维码编码图片分享链接，每张图片只发送一张 |
 | `QK` | 上传并分享夸克网盘链接 | `QK=true` 可单次开启；需完成夸克扫码登录 |
 | `role` | 角色/多角色 | 多角色控制 |
-| `character_keep` `c_k` | 精准参考图片/ck | 附图或使用图库名称 |
-| `character_keep_mode` `c_k_m` | 精准参考模式 | `ct`、`ctst`（默认）、`st`，以及 NAI5 专用的 `oft` |
-| `character_keep_strength` `c_k_s` | 角色保持强度 | NAI4.5 为 0–1，NAI5 为 0–5，省略时读取插件配置 |
+| `character_keep` `c_k` `c_k1` `c_k2`… | 精准参考图片/ck | 附图或使用图库名称 |
+| `character_keep_mode` `c_k_m` `c_k_m1` `c_k_m2`… | 精准参考模式 | `ct`、`ctst`（默认）、`st`，以及 NAI5 专用的 `oft` |
+| `character_keep_strength` `c_k_s` `c_k_s1` `c_k_s2`… | 精准参考强度 | NAI4.5 为 0–1，NAI5 为 0–5，省略时读取插件配置 |
 | `nai预设列表` | 查看所有可用预设 | |
 | `nai预设查看` | 查看指定预设内容 | |
 | `nai预设添加` | 添加预设（管理员） | |

@@ -13,7 +13,7 @@ from .llm import llm_generate_advanced_req
 from .llm_utils import format_readable_error
 from .generation_report import format_generation_report, get_input_image_bytes
 from .params import RELATED_FIELDS_MAP, _collect_images_with_replies
-from .image_params import iter_key_values, resolve_image_params
+from .image_params import character_keep_param, iter_key_values, resolve_image_params
 from .handlers_shared import (
     apply_explicit_overrides,
     extract_batch_count,
@@ -111,14 +111,14 @@ async def _enable_auto_draw(
     character_keep_overrides = "\n".join(
         f"{key}={value}"
         for key, value in iter_key_values([direct_params])
-        if key in reference_keys
+        if key in reference_keys or character_keep_param(key)
     )
     merged_raw, _, explicit_ids = merge_nai_params(preset_contents, character_keep_overrides)
-    if resolved_images.character_keep_image or "character_keep_mode" in explicit_ids:
+    if resolved_images.character_keep_images or any(character_keep_param(key) for key in explicit_ids):
         is_whitelisted = await asyncio.to_thread(plugin.user_manager.is_whitelisted, user_id)
         try:
             await parse_llm_overrides(
-                merged_raw, plugin.config, is_whitelisted, resolved_images.character_keep_image
+                merged_raw, plugin.config, is_whitelisted, resolved_images.character_keep_images
             )
         except Exception as e:  # noqa: BLE001
             return False, f"参数解析失败：{format_readable_error(e)}"
@@ -140,7 +140,7 @@ async def _enable_auto_draw(
         "cs_names": cs_names,
         "i2i_image": resolved_images.i2i_image,
         "vibe_transfer_images": resolved_images.vibe_transfer_images,
-        "character_keep_image": resolved_images.character_keep_image,
+        "character_keep_images": resolved_images.character_keep_images,
         "character_keep_overrides": character_keep_overrides,
         "vision_images": vision_images,
         "resource_keys": resolved_images.resource_keys,
@@ -227,8 +227,8 @@ async def handle_auto_draw(plugin, event) -> AsyncIterator:
     vibe_count = len(current.get("vibe_transfer_images") or [])
     if vibe_count:
         image_parts.append(f"氛围转移×{vibe_count}")
-    if current.get("character_keep_image"):
-        image_parts.append("角色保持图片")
+    if reference_count := len(current.get("character_keep_images", {})):
+        image_parts.append(f"精准参考×{reference_count}")
     if image_parts:
         status_parts.append(f"图片参数：{', '.join(image_parts)}")
     status_parts.append(f"开启者：{opener_id}")
@@ -396,7 +396,7 @@ async def _auto_draw_generate(
                     preset_contents, auto_info.get("character_keep_overrides", "")
                 )
                 user_req = await parse_llm_overrides(
-                    merged_raw, plugin.config, is_whitelisted, auto_info.get("character_keep_image")
+                    merged_raw, plugin.config, is_whitelisted, auto_info.get("character_keep_images", {})
                 )
 
                 i2i_image = auto_info.get("i2i_image")

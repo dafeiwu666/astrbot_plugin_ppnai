@@ -1,6 +1,7 @@
 """Helpers for resolving uploaded images used by AI draw commands."""
 
 import asyncio
+import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -16,6 +17,12 @@ VIBE_TRANSFER_KEYS = {"vibe_transfer", "v_t", "氛围转移"}
 CHARACTER_KEEP_KEYS = {"character_keep", "c_k", "ck", "角色保持"}
 CHARACTER_KEEP_MODE_ALIASES = ["角色参考模式", "ck_mode", "c_k_m"]
 CHARACTER_KEEP_MODE_KEYS = {"character_keep_mode", *CHARACTER_KEEP_MODE_ALIASES}
+CHARACTER_KEEP_STRENGTH_ALIASES = ["角色保持强度", "ck_strength", "c_k_s"]
+_CHARACTER_KEEP_PARAMS = {
+    **dict.fromkeys(CHARACTER_KEEP_KEYS, "character_keep"),
+    **dict.fromkeys(CHARACTER_KEEP_MODE_KEYS, "character_keep_mode"),
+    **dict.fromkeys(["character_keep_strength", *CHARACTER_KEEP_STRENGTH_ALIASES], "character_keep_strength"),
+}
 IMAGE_PARAM_KEYS = I2I_KEYS | VIBE_TRANSFER_KEYS | CHARACTER_KEEP_KEYS
 
 
@@ -24,7 +31,7 @@ class ResolvedImageParams(BaseModel):
 
     i2i_image: str | None = None
     vibe_transfer_images: list[str] = Field(default_factory=list)
-    character_keep_image: str | None = None
+    character_keep_images: dict[int, str] = Field(default_factory=dict)
     vision_images: list[Any] = Field(default_factory=list)
     resource_keys: list[str] = Field(default_factory=list)
 
@@ -34,8 +41,8 @@ class ResolvedImageParams(BaseModel):
             parts.append("图生图")
         if self.vibe_transfer_images:
             parts.append(f"氛围转移×{len(self.vibe_transfer_images)}")
-        if self.character_keep_image:
-            parts.append("角色保持")
+        if self.character_keep_images:
+            parts.append(f"精准参考×{len(self.character_keep_images)}")
         return parts
 
 
@@ -54,23 +61,54 @@ def iter_key_values(texts: Iterable[str]) -> Iterable[tuple[str, str]]:
             yield key.strip(), value.strip()
 
 
-def with_implicit_character_keep(params: Iterable[tuple[str, str]]) -> list[tuple[str, str]]:
-    """An explicit mode can consume an attachment at its position in the command."""
-    pairs = list(params)
-    if any(key in CHARACTER_KEEP_KEYS for key, _ in pairs):
-        return pairs
+def character_keep_param(key: str) -> tuple[str, int] | None:
+    if key in _CHARACTER_KEEP_PARAMS:
+        return _CHARACTER_KEEP_PARAMS[key], 1
+    match = re.fullmatch(r"(.+?)([1-9][0-9]*)", key)
+    if match and match[1] in _CHARACTER_KEEP_PARAMS:
+        return _CHARACTER_KEEP_PARAMS[match[1]], int(match[2])
+    return None
 
-    for index, (key, _) in enumerate(pairs):
-        if key in CHARACTER_KEEP_MODE_KEYS:
-            pairs.insert(index + 1, ("character_keep", "true"))
-            break
-    return pairs
+
+def character_keep_key(param: str, index: int) -> str:
+    return param if index == 1 else f"{param}{index}"
+
+
+def with_implicit_character_keep(params: Iterable[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Fill image selectors and consume precise references in numerical order."""
+    pairs = [(key, value, character_keep_param(key)) for key, value in params]
+    sources = {ref[1] for _, _, ref in pairs if ref and ref[0] == "character_keep"}
+    expanded: list[tuple[str, str, int | None]] = []
+    for key, value, ref in pairs:
+        if ref is None:
+            expanded.append((key, value, None))
+            continue
+        param, index = ref
+        source_index = index if param == "character_keep" else None
+        expanded.append((character_keep_key(param, index), value, source_index))
+        if index not in sources:
+            sources.add(index)
+            expanded.append((character_keep_key("character_keep", index), "true", index))
+
+    ordered_sources = iter(sorted(
+        ((index, key, value) for key, value, index in expanded if index is not None),
+        key=lambda source: source[0],
+    ))
+    return [
+        (key, value) if index is None else next(ordered_sources)[1:]
+        for key, value, index in expanded
+    ]
+
+
+def is_character_keep_source(key: str) -> bool:
+    ref = character_keep_param(key)
+    return ref is not None and ref[0] == "character_keep"
 
 
 def has_enabled_image_params(params: Mapping[str, str]) -> bool:
     """Return whether any image-consuming parameter is enabled."""
     return any(
-        key in IMAGE_PARAM_KEYS and _is_enabled(value)
+        (key in IMAGE_PARAM_KEYS or is_character_keep_source(key)) and _is_enabled(value)
         for key, value in with_implicit_character_keep(params.items())
     )
 
@@ -132,7 +170,18 @@ async def resolve_image_params(
             return await resolve_image(pop_image(param_name))
         raise ValueError(f"图库图片不存在：{library_name}")
 
-    for key, value in with_implicit_character_keep(params):
+    # The handlers list the command first, then presets in descending priority.
+    parameters = []
+    seen_references: set[tuple[str, int]] = set()
+    for key, value in params:
+        ref = character_keep_param(key)
+        if ref and ref in seen_references:
+            continue
+        if ref:
+            seen_references.add(ref)
+        parameters.append((key, value))
+
+    for key, value in with_implicit_character_keep(parameters):
         if key in I2I_KEYS:
             if result.i2i_image:
                 raise ValueError("Param `i2i` already set")
@@ -141,10 +190,9 @@ async def resolve_image_params(
             resolved = await resolve_reference(value, key)
             if resolved:
                 result.vibe_transfer_images.append(resolved)
-        elif key in CHARACTER_KEEP_KEYS:
-            if result.character_keep_image:
-                raise ValueError("Param `character_keep` already set")
-            result.character_keep_image = await resolve_reference(value, key) or None
+        elif (ref := character_keep_param(key)) and ref[0] == "character_keep":
+            if resolved := await resolve_reference(value, key):
+                result.character_keep_images[ref[1]] = resolved
 
     result.vision_images = image_queue
     return result

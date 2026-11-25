@@ -3,6 +3,7 @@
 import base64
 import binascii
 
+from .image_params import character_keep_key
 from .models import Req
 
 
@@ -30,10 +31,11 @@ def format_generation_report(raw_input: str, req: Req) -> str:
                 f"vibe[{index}].info_extract={vibe.info_extract}, "
                 f"ref_strength={vibe.ref_strength}"
             )
-    if reference := req.addition.character_keep:
-        params.append("character_keep=true")
-        params.append(f"character_keep_mode={reference.effective_mode}")
-        params.append(f"character_keep_strength={reference.strength}")
+    precise_references = req.addition.precise_references()
+    for index, reference in precise_references:
+        params.append(f"{character_keep_key('character_keep', index)}=true")
+        params.append(f"{character_keep_key('character_keep_mode', index)}={reference.effective_mode}")
+        params.append(f"{character_keep_key('character_keep_strength', index)}={reference.strength}")
     return (
         "画图参数记录\n"
         f"原始输入：\n{raw_input or '(empty)'}\n\n"
@@ -46,10 +48,7 @@ def format_generation_report(raw_input: str, req: Req) -> str:
             if (
                 req.addition.image_to_image_base64
                 or req.addition.vibe_transfer_list
-                or (
-                    req.addition.character_keep
-                    and req.addition.character_keep.base64
-                )
+                or precise_references
             )
             else ""
         )
@@ -66,8 +65,11 @@ def get_input_image_bytes(req: Req) -> list[bytes]:
         for item in req.addition.vibe_transfer_list
         if item.base64
     )
-    if req.addition.character_keep and req.addition.character_keep.base64:
-        data_uris.append(req.addition.character_keep.base64)
+    data_uris.extend(
+        reference.base64
+        for _, reference in req.addition.precise_references()
+        if reference.base64
+    )
 
     images: list[bytes] = []
     for data_uri in data_uris:

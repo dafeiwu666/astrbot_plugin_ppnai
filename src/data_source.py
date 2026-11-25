@@ -369,9 +369,8 @@ def _convert_req_to_official_format(req: Req, opus_free_mode: bool = False) -> d
     # NovelAI 服务端不允许在同一次请求中同时使用 Vibe Transfer 和
     # Character Reference（Director Reference）。两者都属于参考图输入，
     # 混用会直接返回 400，而不是生成结果。
-    if req.addition.vibe_transfer_list and (
-        req.addition.character_keep and req.addition.character_keep.base64
-    ):
+    precise_references = req.addition.precise_references()
+    if req.addition.vibe_transfer_list and precise_references:
         raise GenerateError(
             "Vibe Transfer（v_t）与角色保持（character_keep）不能同时使用；"
             "请保留其中一种图片参数",
@@ -402,46 +401,49 @@ def _convert_req_to_official_format(req: Req, opus_free_mode: bool = False) -> d
             parameters["reference_information_extracted_multiple"] = vibe_info_extracts
             parameters["reference_strength_multiple"] = vibe_strengths
     
-    if (reference := req.addition.character_keep) and reference.base64:
+    if precise_references:
         try:
             req.validate_character_keep()
         except ValueError as exc:
             raise GenerateError(str(exc), status_code=400) from exc
 
         is_v5 = req.model.startswith("nai-diffusion-5-")
-        try:
-            if is_v5:
-                image = prepare_v5_character_keep_image(
-                    _extract_base64_data(reference.base64)
-                )
-            else:
-                image = _extract_base64_data(
-                    convert_to_jpeg_for_character_keep(reference.base64)
-                )
-        except (ValueError, OSError, DecompressionBombError) as exc:
-            raise GenerateError(
-                "无法处理角色参考图片，请换一张可读取的图片", status_code=400
-            ) from exc
-
-        parameters["director_reference_images"] = [image]
-        parameters["director_reference_strength_values"] = [reference.strength]
-        parameters["director_reference_information_extracted"] = [1.0]
-        mode = reference.effective_mode
-        parameters["director_reference_descriptions"] = [
-            {
-                "caption": {
-                    "base_caption": "costume" if mode == "outfit" else mode,
-                    "char_captions": [],
-                },
-                "use_coords": False,
-                "use_order": False,
-                "legacy_uc": False,
-            }
-        ]
+        reference_images = []
+        strength_values = []
+        descriptions = []
+        for index, reference in precise_references:
+            assert reference.base64
+            try:
+                if is_v5:
+                    image = prepare_v5_character_keep_image(_extract_base64_data(reference.base64))
+                else:
+                    image = _extract_base64_data(convert_to_jpeg_for_character_keep(reference.base64))
+            except (ValueError, OSError, DecompressionBombError) as exc:
+                raise GenerateError(
+                    f"无法处理第 {index} 张精准参考图，请换一张可读取的图片", status_code=400
+                ) from exc
+            reference_images.append(image)
+            strength_values.append(reference.strength)
+            mode = reference.effective_mode
+            descriptions.append(
+                {
+                    "caption": {
+                        "base_caption": "costume" if mode == "outfit" else mode,
+                        "char_captions": [],
+                    },
+                    "use_coords": False,
+                    "use_order": False,
+                    "legacy_uc": False,
+                }
+            )
+        parameters["director_reference_images"] = reference_images
+        parameters["director_reference_strength_values"] = strength_values
+        parameters["director_reference_information_extracted"] = [1.0] * len(reference_images)
+        parameters["director_reference_descriptions"] = descriptions
         # V5 的网页客户端固定发送 0，V4.5 保留插件原有映射。
-        parameters["director_reference_secondary_strength_values"] = [
-            0.0 if is_v5 else reference.strength
-        ]
+        parameters["director_reference_secondary_strength_values"] = (
+            [0.0] * len(reference_images) if is_v5 else strength_values.copy()
+        )
         if is_v5:
             parameters["params_version"] = 4
     

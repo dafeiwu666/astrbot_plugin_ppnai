@@ -14,7 +14,7 @@ from astrbot.api.message_components import Image, Node, Nodes, Plain
 from astrbot.api.star import StarTools
 
 from .data_source import GenerateError, wrapped_generate
-from .image_params import iter_key_values, resolve_image_params
+from .image_params import is_character_keep_source, iter_key_values, resolve_image_params
 from .llm import ReturnToLLMError, llm_generate_advanced_req
 from .llm_utils import format_readable_error
 from .generation_report import format_generation_report, get_input_image_bytes
@@ -235,7 +235,7 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
     merged_raw, wrappers, explicit_ids = merge_nai_params(preset_contents, raw_input)
     try:
         user_req = await parse_llm_overrides(
-            merged_raw, plugin.config, is_whitelisted, resolved_images.character_keep_image
+            merged_raw, plugin.config, is_whitelisted, resolved_images.character_keep_images
         )
     except Exception as e:  # noqa: BLE001
         yield event.plain_result(f"参数解析失败：{format_readable_error(e)}")
@@ -243,7 +243,7 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
 
     i2i_image = resolved_images.i2i_image
     vibe_transfer_images = resolved_images.vibe_transfer_images
-    character_keep_image = resolved_images.character_keep_image
+    character_keep_images = resolved_images.character_keep_images
     vision_images = resolved_images.vision_images
 
     if (
@@ -252,7 +252,7 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
         and not vision_images
         and not i2i_image
         and not vibe_transfer_images
-        and not character_keep_image
+        and not character_keep_images
     ):
         yield event.plain_result(
             "请输入画图描述，格式：\n"
@@ -475,7 +475,7 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
         if "=" not in line:
             continue
         key, value = (part.strip() for part in line.split("=", 1))
-        if key in {"i2i", "c_k", "ck", "character_keep", "vibe_transfer", "v_t"}:
+        if is_character_keep_source(key) or key in {"i2i", "vibe_transfer", "v_t"}:
             if value.lower() not in {"true", "false", "1", "0", "on", "off", "是", "否", "关"}:
                 resource_keys.append(f"image:{value}")
 

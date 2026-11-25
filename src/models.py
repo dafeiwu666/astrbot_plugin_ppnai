@@ -163,6 +163,15 @@ class ReqAddition(BaseModel):
     vibe_transfer_list: list[ReqAdditionVibeTransfer] = []  # 氛围转移
     multi_role_list: list[ReqAdditionMultiRole] = []  # 多角色控制
     character_keep: ReqAdditionCharacterKeep | None = None  # 角色保持
+    character_keep_extra: dict[Annotated[int, Field(ge=2)], ReqAdditionCharacterKeep] = Field(
+        default_factory=dict
+    )
+
+    def precise_references(self) -> list[tuple[int, ReqAdditionCharacterKeep]]:
+        references = sorted(self.character_keep_extra.items())
+        if self.character_keep:
+            references.insert(0, (1, self.character_keep))
+        return [(index, reference) for index, reference in references if reference.base64]
 
 
 @model_with_model_config(REQ_MODEL_CONFIG)
@@ -212,19 +221,20 @@ class Req(BaseModel):
     stream: int = 1
 
     def validate_character_keep(self) -> None:
-        reference = self.addition.character_keep
-        if not reference or not reference.base64:
+        references = self.addition.precise_references()
+        if not references:
             return
         if self.model.startswith("nai-diffusion-5-"):
             max_strength = V5_CHARACTER_KEEP_MAX_STRENGTH
         elif self.model.startswith("nai-diffusion-4-5-"):
-            if reference.effective_mode == "outfit":
-                raise ValueError("服装参考需要使用 NAI5 完整版或精选版")
             max_strength = 1
         else:
             raise ValueError("角色参考需要使用 NAI4.5 或 NAI5 模型")
-        if not 0 <= reference.strength <= max_strength:
-            raise ValueError(f"模型 {self.model} 的角色参考强度须在 0–{max_strength} 之间")
+        for index, reference in references:
+            if reference.effective_mode == "outfit" and max_strength == 1:
+                raise ValueError(f"第 {index} 张服装参考需要使用 NAI5 完整版或精选版")
+            if not 0 <= reference.strength <= max_strength:
+                raise ValueError(f"第 {index} 张角色参考的强度须在 0–{max_strength} 之间（{self.model}）")
 
 
 class Resp(BaseModel):
