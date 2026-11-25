@@ -59,6 +59,7 @@ from .models import (
     V5_CHARACTER_KEEP_MAX_STRENGTH,
 )
 from .image_io import resolve_image
+from .image_params import CHARACTER_KEEP_MODE_ALIASES, with_implicit_character_keep
 
 if TYPE_CHECKING:
     from .config import Config
@@ -266,7 +267,6 @@ req_model_assembler = ParamAssembler[Req, "Config"]()
 PORTRAIT_KEYWORDS = ["portrait", "竖图"]
 LANDSCAPE_KEYWORDS = ["landscape", "横图"]
 SQUARE_KEYWORDS = ["square", "方图"]
-CHARACTER_KEEP_MODE_ALIASES = ["角色参考模式", "ck_mode", "c_k_m"]
 CHARACTER_KEEP_MODE_SHORTCUTS: dict[str, CharacterKeepMode] = {
     "ctst": "character&style",
     "ct": "character",
@@ -384,7 +384,9 @@ async def start_process(
     "model",
     ["模型"],
     lambda ctx: (
-        f"有这些模型可选：\n\n{format_list(AVAILABLE_MODELS, AVAILABLE_MODEL_NAME_MAP)}"
+        f"默认 `{ctx.defaults.model}`。可用模型\n"
+        f"{format_list(AVAILABLE_MODELS, AVAILABLE_MODEL_NAME_MAP)}\n"
+        f"模型简写及其对应值 {format_separate_list(MODEL_ALIAS_MAP, MODEL_ALIAS_MAP)}。"
     ),
 )
 async def apply_model(value: str, data: dict[str, Any], **_):
@@ -470,7 +472,8 @@ async def apply_artist(value: str, data: dict[str, Any], **_):
         f"\n- {format_separate_list(LANDSCAPE_KEYWORDS)}（`{ctx.defaults.landscape_size}`）"
         f"\n- {format_separate_list(SQUARE_KEYWORDS)}（`{ctx.defaults.square_size}`）"
         f"\n"
-        f"\n也可以自定义，格式如 `1024x768`。"
+        f"\n白名单用户可填写自定义尺寸，例如 `1024x768`。"
+        f"\n宽高上限为 `{ctx.permission.width_limit}x{ctx.permission.height_limit}`。"
     ),
 )
 async def apply_size(value: str, data: dict[str, Any], ctx: "Config", **_):
@@ -492,7 +495,8 @@ async def apply_seed(value: str, data: dict[str, Any], **_):
     "steps",
     ["采样步数"],
     lambda ctx: (
-        f"整数，默认为 `{ctx.defaults.steps}`，最高不超过 `{ctx.permission.steps_limit}`"
+        f"整数，默认 `{ctx.defaults.steps}`，范围为 1–{ctx.permission.steps_limit}。"
+        "非白名单用户最多使用 28 步。"
     ),
 )
 async def apply_steps(value: str, data: dict[str, Any], **_):
@@ -559,7 +563,7 @@ async def apply_other(value: str, data: dict[str, Any], **_):
 @req_model_assembler.applier(
     "i2i",
     ["图生图"],
-    lambda _: "图生图功能，引用一张图片进行重绘。建议格式：`图生图=true`",
+    lambda _: "引用一张图重绘。`i2i=true` 使用附图或回复图，`i2i=图库名称` 使用指定图库图。",
 )
 async def apply_i2i(value: str, data: dict[str, Any], images: list[Image], **_):
     if value.lower() in ("false", "0", "off", "关"):
@@ -574,7 +578,7 @@ async def apply_i2i(value: str, data: dict[str, Any], images: list[Image], **_):
 @req_model_assembler.applier(
     "data",
     ["输出参数记录"],
-    lambda _: "是否输出参数聊天记录，可选值：`true` / `false`",
+    lambda _: "`data=true` 单次输出绘图参数记录和参考图，`data=false` 按插件全局设置输出。",
 )
 async def apply_data(value: str, data: dict[str, Any], **_):
     value_lower = value.lower().strip()
@@ -589,7 +593,7 @@ async def apply_data(value: str, data: dict[str, Any], **_):
 @req_model_assembler.applier(
     "i2i_force",
     ["重绘力度", "i_f"],
-    lambda ctx: f"小数，默认为 `{ctx.defaults.i2i_force}`",
+    lambda ctx: f"搭配 `i2i`，范围 0–1，默认 `{ctx.defaults.i2i_force}`。值越大，改动越多。",
 )
 async def apply_i2i_force(value: str, data: dict[str, Any], **_):
     set_param(data, "i2i_force", value)
@@ -598,7 +602,7 @@ async def apply_i2i_force(value: str, data: dict[str, Any], **_):
 @req_model_assembler.applier(
     "i2i_cl",
     ["图片处理"],
-    lambda ctx: f"小数，默认为 `{ctx.defaults.i2i_cl}`",
+    lambda ctx: f"旧版图片处理参数，默认 `{ctx.defaults.i2i_cl}`。当前会显示在参数记录中。",
 )
 async def apply_i2i_cl(value: str, data: dict[str, Any], **_):
     set_param(data, "i2i_cl", value)
@@ -607,10 +611,9 @@ async def apply_i2i_cl(value: str, data: dict[str, Any], **_):
 @req_model_assembler.applier(
     "vibe_transfer",
     ["氛围转移", "v_t"],
-    lambda ctx: (
-        "氛围转移功能，参考图片风格。建议格式：`氛围转移=true`"
-        "\n"
-        f"\n该参数可以多次出现，以引用多张图片，最多限 {ctx.permission.vibe_transfer_image_limit} 张"
+    lambda _: (
+        "参考图片氛围。`v_t=true` 使用附图或回复图，`v_t=图库名称` 使用指定图库图。"
+        "与 `c_k` 精准参考分开使用。"
     ),
 )
 async def apply_vibe_transfer(
@@ -632,9 +635,7 @@ async def apply_vibe_transfer(
     "vibe_transfer_info_extract",
     ["氛围转移信息提取度", "v_t_i_e"],
     lambda ctx: (
-        "> 氛围转移的附加参数"
-        "\n"
-        f"\n小数，默认为 `{ctx.defaults.vibe_transfer_info_extract}`"
+        f"写在 `v_t` 之后，信息提取度范围 0–1，默认 `{ctx.defaults.vibe_transfer_info_extract}`。"
     ),
 )
 async def apply_vibe_transfer_info_extract(value: str, data: dict[str, Any], **_):
@@ -653,9 +654,7 @@ async def apply_vibe_transfer_info_extract(value: str, data: dict[str, Any], **_
     "vibe_transfer_ref_strength",
     ["氛围转移参考强度", "v_t_r_s"],
     lambda ctx: (
-        "> 氛围转移的附加参数"
-        "\n"
-        f"\n小数，默认为 `{ctx.defaults.vibe_transfer_ref_strength}`"
+        f"写在 `v_t` 之后，参考强度范围 0–1，默认 `{ctx.defaults.vibe_transfer_ref_strength}`。"
     ),
 )
 async def apply_vibe_transfer_ref_strength(value: str, data: dict[str, Any], **_):
@@ -696,18 +695,9 @@ C3 为正中间"""
     "role",
     ["角色", "多角色"],
     lambda _: (
-        "多角色控制，可以在一张图中放置多个角色并分别设置提示词\n"
-        "\n格式：`role=位置|正向提示词|反向提示词`\n"
-        "\n- 位置：A1-E5（见下方网格图）\n"
-        "- 正向提示词：该角色的描述\n"
-        "- 反向提示词：可选，省略则为空\n"
-        "\n可多次使用以添加多个角色\n"
-        "\n示例：\n"
-        "```\n"
-        "role=A2|1girl, cute, smile\n"
-        "role=D2|1boy, cool|bad anatomy\n"
-        "```\n"
-        "\n" + format_position_grid()
+        "格式 `role=位置|正向提示词|反向提示词`，最后一项可省略。"
+        "当前官方请求将角色的位置和正向提示词拼入总提示词。\n"
+        "示例 `role=C3|1girl, smile`。\n" + format_position_grid()
     ),
 )
 async def apply_role(value: str, data: dict[str, Any], ctx: "Config", **_):
@@ -753,7 +743,7 @@ async def apply_role(value: str, data: dict[str, Any], ctx: "Config", **_):
     ["角色保持", "ck", "c_k"],
     lambda _: (
         "NAI4.5 / NAI5 精准参考功能，使用一张参考图引导出图\n"
-        "\n用 `c_k=true` 并附图，或写 `c_k=图库名称`\n"
+        "\n附图时可写 `c_k=true` 或直接指定 `c_k_m`，图库图片用 `c_k=图库名称`\n"
         "\n仅限引用一张图片\n"
         "\n相关参数：\n"
         "- `c_k_m` 可填 `ct`、`ctst`、`st`、`oft`，默认 `ctst`（角色和画风）\n"
@@ -766,6 +756,8 @@ async def apply_character_keep(value: str, data: dict[str, Any], images: list[Im
     reference = data.setdefault("addition", {}).setdefault("character_keep", {})
     if reference.get("base64"):
         raise ValueError("Param `character_keep` already set")
+    if not images:
+        raise ValueError("精准参考需要上传图片、回复含图消息，或使用 c_k=图库名称")
     reference["base64"] = await resolve_first_image(images)
 
 
@@ -797,7 +789,7 @@ async def apply_character_keep_vibe(value: str, data: dict[str, Any], **_):
     "character_keep_mode",
     CHARACTER_KEEP_MODE_ALIASES,
     lambda _: (
-        "精准参考模式，需通过 `c_k` 提供图片\n"
+        "精准参考模式。省略 `c_k` 时，使用本条消息或被回复消息里的图片。\n"
         "\n`ct` / `character` 参考角色，`ctst` / `character&style` 参考角色和画风，"
         "`st` / `style` 参考画风，`oft` / `outfit` 参考服装（NAI5）\n"
         "\n省略时默认 `character&style`"
@@ -826,10 +818,10 @@ async def apply_character_keep_mode(value: str, data: dict[str, Any], ctx: "Conf
 @req_model_assembler.applier(
     "character_keep_strength",
     ["角色保持强度", "ck_strength", "c_k_s"],
-    lambda _: (
-        "> 角色保持的附加参数\n"
-        "\n参考强度，NAI4.5 为 0–1，NAI5 为 0–5，省略时读取插件默认值设置\n"
-        "\n值越大，生成的角色越接近参考图片"
+    lambda ctx: (
+        "参考强度，NAI4.5 为 0–1，NAI5 为 0–5。"
+        f"省略时使用插件设置 `{ctx.defaults.character_keep_strength}`。"
+        "值越大，生成结果越接近参考图。"
     ),
 )
 async def apply_character_keep_strength(value: str, data: dict[str, Any], **_):
@@ -971,6 +963,17 @@ def post_check_limits(model: Req, ctx: "Config", is_whitelisted: bool = False):
 USER_DEFINABLE_FIELDS = list(req_model_assembler.appliers.keys())
 
 
+def format_nai_parameter_reference(config: "Config") -> str:
+    """Render the registered /nai parameters and their help text for the draw tool."""
+    entries: list[str] = []
+    for applier in req_model_assembler.appliers.values():
+        names = format_separate_list((applier.id, *applier.keywords))
+        entries.append(f"- {names}")
+        if applier.doc_gen:
+            entries.extend(f"  {line}" for line in applier.doc_gen(config).splitlines())
+    return "\n".join(entries)
+
+
 async def parse_req(
     raw_params: str,
     message: list[BaseMessageComponent],
@@ -986,7 +989,7 @@ async def parse_req(
         config: 配置
         is_whitelisted: 用户是否在白名单中（白名单用户不受步数28和自定义尺寸限制）
     """
-    input_params = list(parse_params(raw_params))
+    input_params = with_implicit_character_keep(parse_params(raw_params))
     images = _collect_images_with_replies(message)
     req = await req_model_assembler.apply(input_params, images, config, is_whitelisted)
     
@@ -1007,7 +1010,7 @@ async def parse_req_with_remaining_images(
     The returned images are the leftover queue after i2i/vibe_transfer/character_keep
     and similar image-consuming parameters have popped from it.
     """
-    input_params = list(parse_params(raw_params))
+    input_params = with_implicit_character_keep(parse_params(raw_params))
     images: list[Image] = _collect_images_with_replies(message)
     req = await req_model_assembler.apply(input_params, images, config, is_whitelisted)
     post_check_limits(req, config, is_whitelisted)

@@ -14,6 +14,9 @@ FALSE_VALUES = {"false", "0", "off", "关", "否", "no"}
 I2I_KEYS = {"i2i", "图生图"}
 VIBE_TRANSFER_KEYS = {"vibe_transfer", "v_t", "氛围转移"}
 CHARACTER_KEEP_KEYS = {"character_keep", "c_k", "ck", "角色保持"}
+CHARACTER_KEEP_MODE_ALIASES = ["角色参考模式", "ck_mode", "c_k_m"]
+CHARACTER_KEEP_MODE_KEYS = {"character_keep_mode", *CHARACTER_KEEP_MODE_ALIASES}
+IMAGE_PARAM_KEYS = I2I_KEYS | VIBE_TRANSFER_KEYS | CHARACTER_KEEP_KEYS
 
 
 class ResolvedImageParams(BaseModel):
@@ -51,14 +54,25 @@ def iter_key_values(texts: Iterable[str]) -> Iterable[tuple[str, str]]:
             yield key.strip(), value.strip()
 
 
+def with_implicit_character_keep(params: Iterable[tuple[str, str]]) -> list[tuple[str, str]]:
+    """An explicit mode can consume an attachment at its position in the command."""
+    pairs = list(params)
+    if any(key in CHARACTER_KEEP_KEYS for key, _ in pairs):
+        return pairs
+
+    for index, (key, _) in enumerate(pairs):
+        if key in CHARACTER_KEEP_MODE_KEYS:
+            pairs.insert(index + 1, ("character_keep", "true"))
+            break
+    return pairs
+
+
 def has_enabled_image_params(params: Mapping[str, str]) -> bool:
     """Return whether any image-consuming parameter is enabled."""
-    for key, value in params.items():
-        if key in I2I_KEYS | VIBE_TRANSFER_KEYS | CHARACTER_KEEP_KEYS and _is_enabled(
-            value
-        ):
-            return True
-    return False
+    return any(
+        key in IMAGE_PARAM_KEYS and _is_enabled(value)
+        for key, value in with_implicit_character_keep(params.items())
+    )
 
 
 async def resolve_image_params(
@@ -118,7 +132,7 @@ async def resolve_image_params(
             return await resolve_image(pop_image(param_name))
         raise ValueError(f"图库图片不存在：{library_name}")
 
-    for key, value in params:
+    for key, value in with_implicit_character_keep(params):
         if key in I2I_KEYS:
             if result.i2i_image:
                 raise ValueError("Param `i2i` already set")

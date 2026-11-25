@@ -36,6 +36,8 @@ n=3
 
 未填写 `n` 时默认生成 1 张；开启额度系统后按 `n` 扣除额度。`nai画图` 与自动画图批量模式会为每张图重新调用 LLM 生成参数。
 
+AI 工具 `stnai_generate_image` 的 `instructions` 字段提供 `/nai` 的参数、别名和用法。调用时每行填写一个 `key=value`，按需求选择参数即可。
+
 ## 📝 预设管理
 
 预设用于保存一组可重复使用的提示词和绘图参数。预设创建后不会自动应用，需要在 `nai`、`nai画图` 或 `nai自动画图` 中通过 `s=预设名`、`s1=预设名` 等方式引用。
@@ -218,7 +220,7 @@ cs1=夕立
 cs2=樱羽艾玛
 ```
 
-AI 绘图工具不会自动添加 `csN` 或替 AI 决定是否使用角色。智能体可先调用 `stnai_search_character_tags`，将用户原始请求作为 `query`；检索结果会返回可放入绘图 description 的“人物Tag预留库”区块及 `角色名:角色库原始Tag` 行，例如 `夕立:yuudachi kai ni (Kancolle)`。之后由 AI 自行决定是否将原始 Tag 纳入绘图 description/`tag`，再调用 `stnai_generate_image`。命中的 Tag 不会被插件自动改写、追加或转成 `csN`。
+智能体可先调用 `stnai_search_character_tags`，将用户原始请求作为 `query`。检索结果包含“人物Tag预留库”区块及 `角色名:角色库原始Tag` 行，例如 `夕立:yuudachi kai ni (Kancolle)`。AI 可把选中的原始 Tag 写进 `stnai_generate_image` 的 `instructions` 中的 `tag=`，也可以在用户明确指定角色库条目时使用 `csN`。
 
 此 CS 文本 Tag 库不同于 NovelAI 图片角色保持参数 `character_keep=图库名称`。
 
@@ -263,7 +265,7 @@ cs2=另一个角色名
 
 当你在同一条消息里发送多张图片时：
 
-- 若启用了 `i2i` / `vibe_transfer` / `character_keep` 等参数，会按图片顺序先“消耗”对应数量。
+- 若启用了 `i2i`、`vibe_transfer` 或精准参考（`c_k` / `c_k_m`），会按指令顺序分配附图，剩下的图片可用于识图。
 - **剩余图片会作为识图参考**传给高级参数模型（需要开启 `llm.enable_vision=true`）。
 - 可选：用 `llm.vision_image_limit` 限制传给模型的参考图片数量（0 表示不限制）。
 
@@ -461,11 +463,10 @@ vibe_transfer_info_extract=0.8
 nai
 model=nai5_full
 tag=1girl, standing
-c_k=true
 c_k_m=ctst
 ```
 
-随指令附上一张参考图，也可以回复含图消息。使用图库时，将 `c_k=true` 改为 `c_k=图库名称`。
+随指令附上一张参考图，或回复含图消息。填写 `c_k_m` 时默认按 `c_k=true` 取图，显式写 `c_k=true` 也有效。使用图库时，加上 `c_k=图库名称`。
 
 - `c_k_m=ctst` 或 `c_k_m=character&style` 同时参考角色和画风。
 - `c_k_m=ct` 或 `c_k_m=character` 仅参考角色。

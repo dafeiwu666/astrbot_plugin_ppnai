@@ -17,7 +17,8 @@
 - **🖼️ 高级功能支持**：
     - **图生图 (i2i)**：支持引用图片进行重绘。
     - **氛围转移 (Vibe Transfer)**：提取参考图的风格/构图。内置 **Vibe 缓存机制**，复用图片时直接调用缓存，避免连续扣费。
-    - **角色 Tag 库 (CS)**：使用 `cs添加 名称` 后续行填写 NovelAI Tag；`nai`、`nai画图`、`nai自动画图` 支持 `cs1`、`cs2` 引用并将原始 Tag 直接追加到正向提示词。AI 可调用 `stnai_search_character_tags` 获取适合放入 description 的 `角色名:原始Tag` 区块，并自行决定如何使用；`stnai_generate_image` 不会自动添加 `csN`。图片角色保持仍使用 `character_keep`。
+    - **角色 Tag 库 (CS)**：使用 `cs添加 名称` 后续行填写 NovelAI Tag。`nai`、`nai画图`、`nai自动画图` 支持 `cs1`、`cs2` 引用并将原始 Tag 直接追加到正向提示词。AI 可通过 `stnai_search_character_tags` 检索角色，将选中的原始 Tag 写入绘图工具 `instructions` 的 `tag=`。
+    - **AI 绘图工具**：`stnai_generate_image` 在 `instructions` 字段公开 `/nai` 的参数、别名和用法。AI 按需组合绘图参数，每行一个 `key=value`。
     - **多角色控制 (Role)**：指定不同区域角色的外貌。
     - **视觉识图与消息引用**：支持多模态模型识别发送的图片并生成参数。**全面支持收集被引用消息里的图片**（手动绘图、自动绘图和 LLM 工具入口均已接入）。
     - **多图参考（可选）**：同一条消息里发送多张图，除被消耗的图片外，其余会传给高级参数模型（可用 `llm.vision_image_limit` 限制数量）。
@@ -186,10 +187,9 @@ n=3
 nai
 model=nai5_full
 tag=1girl, standing, coffee shop
-c_k=图库中的参考图
 c_k_m=oft
 ```
-使用 `c_k=true` 并附图或回复含图消息，也可以用 `model=nai5_c` 选择精选版。
+随指令附图或回复含图消息。写了 `c_k_m` 时可以省略 `c_k=true`，显式填写也有效。图库参考用 `c_k=图库名称`。精选版用 `model=nai5_c`。
 `c_k_m` 可用 `ct`（角色）、`ctst`（角色和画风）、`st`（画风）和 `oft`（服装），也接受完整名称。省略模式时参考角色和画风，省略 `c_k_s` 时使用插件配置里的默认参考强度。
 
 ## ⚙️ 参数指令表

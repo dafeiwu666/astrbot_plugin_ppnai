@@ -83,8 +83,14 @@ from .src.llm import (
 from .src.llm_utils import format_readable_error
 from .src.models import Req
 from .src.character_keep_store import CharacterKeepStore
-from .src.params import CHARACTER_KEEP_MODE_ALIASES, _collect_images_with_replies, parse_req
+from .src.params import _collect_images_with_replies, format_nai_parameter_reference, parse_req
 from .src.image_io import resolve_image
+from .src.image_params import (
+    CHARACTER_KEEP_MODE_ALIASES,
+    CHARACTER_KEEP_MODE_KEYS,
+    IMAGE_PARAM_KEYS,
+    with_implicit_character_keep,
+)
 from .src.user_manager import UserManager
 from .src.preset_manager import PresetManager
 from .src.preview_manager import PreviewManager
@@ -338,9 +344,9 @@ class STNaiGenerateImageArgs(BaseModel):
         str,
         Field(
             description=(
-                "Complete /nai command arguments, one key=value per line."
-                " Include tag=... and optional model=..., size=..., s1=...;"
-                " do not include the /nai command prefix."
+                "填写本次 /nai 绘图的参数，每行一个 key=value。"
+                "只填写本次需要的参数，省略的项按所选预设和插件默认值处理。"
+                "同一个参数及其别名只写一次。省去命令前缀、代码围栏和聊天正文。"
             )
         ),
     ]
@@ -366,8 +372,9 @@ class STNaiSearchCharacterTagsTool(ConfigNeededTool):
         "Search the current user's NovelAI character tag library by names found in "
         "the user's original request. Returns a description block headed "
         "人物Tag预留库 with exact "
-        "角色名:原始Tag lines. Call this before composing image tags when a named "
-        "character may exist in the library. Do not add csN selectors automatically."
+        "角色名:原始Tag lines. When a named character may exist in the library, call this "
+        "before composing tag= in stnai_generate_image's instructions. "
+        "Keep selected tags verbatim. Use csN selectors only when the user specifies a library entry."
     )
     parameters: dict = Field(default_factory=dict)
     character_store_init: Any | None = None
@@ -417,27 +424,45 @@ class STNaiSearchCharacterTagsTool(ConfigNeededTool):
 @dataclass(config=ConfigDict(arbitrary_types_allowed=True))
 class STNaiGenerateImageTool(ConfigNeededTool):
     name: str = "stnai_generate_image"
-    description: str = """AI绘画提示词:
-基本规则:
-    触发条件: 用户要求使用AI绘图提示词、生成NAI tag或要求画图
-    强制输出限制: 仅输出tag指令代码，严禁包含任何回复、口癖或废话。如生成有姓名角色时则不写服装和人物外貌细节，缺少的tag数用动作tag补充
-    Tag数量要求: 约30个tag，必须细化服装、眼瞳与发型样式，体现设计主题感
-    权重语法: "系数::tag::" (若末尾为数字需加下划线，如 "1.1::tag2_::")
-    禁用词汇: 禁止输出 masterpiece, best quality, highres 等质量词
-    Cosplay规则: 格式为 人物名 (作品名) (cosplay)，禁止直接添加单个cosplay tag
-    自然语言: 复杂动作或细节难以用tag描述时，可直接嵌入英文短句描述，需详尽描述各类动作细节甚至一小片花纹。
-    角色库: 生成角色Tag前，先调用 stnai_search_character_tags 查询用户原始请求；检索工具会返回可放入 description 的“角色名:角色库原始Tag”区块。AI 自行决定如何将原始Tag纳入绘图description/tag，Tag必须保持原样。不要自动生成 csN 选择器。
-输出模板:
-    /nai tag=<主体及人物tag>, <动作姿态tag>, <服装细节tag>, <场景与环境tag>(如前有具体人名则不写服装和人物外貌细节，改为各种动作姿态。)
-    size=横图/竖图/方图（默认不写size）
-    人物Tag预留库：检索结果由 stnai_search_character_tags 返回，AI自行决定是否纳入绘图description/tag。"""
+    description: str = (
+        "用户要求 NovelAI 出图时调用，工具会把图片发到当前会话。仅请求 Tag 时直接提供 Tag。\n"
+        "从 instructions 字段里的参数清单选择所需参数。参考图在本次附图、回复图或指定图库中可用时，"
+        "按需求选择图生图、氛围转移或精准参考。例如保留服装用 c_k_m=oft，并使用 NAI5。"
+        "尺寸、张数、参数记录和分享方式按用户要求设置。\n"
+        "在 tag= 中用逗号分隔约 30 个英文 Tag，涵盖主体、动作、服装、眼瞳、发型和环境。"
+        "具名角色用动作和姿势细节，服装、外貌以用户给定内容和角色库原始 Tag 为准。"
+        "遇到可能在库里的具名角色，先用用户原话调用 stnai_search_character_tags，"
+        "选用的原始 Tag 保持原样。csN 仅用于用户明确指定的角色库条目。\n"
+        "权重写作 系数::tag::，Tag 以数字结尾时追加下划线，例如 1.1::tag2_::。"
+        "省去 masterpiece、best quality、highres 等质量词。"
+        "Cosplay 写作 人物名 (作品名) (cosplay)。复杂动作或细节可以用英文短句。"
+    )
     parameters: dict = Field(default_factory=dict)
     # Runtime-only callback; it is not exposed in the public tool schema.
     nai_command_handler_init: Any | None = None
 
     def __post_init__(self):
         super().__post_init__()
-        self.parameters = STNaiGenerateImageArgs.model_json_schema()
+        schema = STNaiGenerateImageArgs.model_json_schema()
+        instructions = schema["properties"]["instructions"]
+        max_n = self.config.request.max_n
+        batch_limit = f"，本插件上限为 {max_n} 张" if max_n > 0 else ""
+        special_parameters = (
+            "- `s`、`s1`、`s2` 等用于引用已知预设名称，`s` 等同 `s1`。"
+            "直接填写的参数优先于预设，预设按编号从小到大排列优先级。\n"
+            "- `cs`、`cs1`、`cs2` 等用于引用已知角色库条目，`cs` 等同 `cs1`。"
+            "原始角色 Tag 会追加到正向提示词。\n"
+            f"- `n` 是生成张数，填正整数，默认 1{batch_limit}。\n"
+            "- `QR=true` 通过公开图床生成图片分享二维码。\n"
+            "- `QK=true` 上传生成图并返回夸克网盘分享链接，需要配置并登录夸克。"
+        )
+        instructions["description"] = "\n\n".join((
+            instructions["description"],
+            "参数受当前用户权限、模型兼容性和插件配置约束。",
+            f"绘图参数\n{format_nai_parameter_reference(self.config)}",
+            f"预设、角色库、批量和输出控制\n{special_parameters}",
+        ))
+        self.parameters = schema
 
     async def call(
         self,
@@ -1111,7 +1136,7 @@ class Plugin(Star):
             final_params.append(f'append_negative={", ".join(append_negative_parts)}')
         
         # 添加其他参数
-        for key, value in merged.items():
+        for key, value in with_implicit_character_keep(merged.items()):
             final_params.append(f'{key}={value}')
         
         # 合并 negative
@@ -1120,7 +1145,7 @@ class Plugin(Star):
         
         final_raw = '\n'.join(final_params)
         
-        image_params = {"i2i", "i2i_image", "vibe_transfer", "v_t", "character_keep", "c_k", "ck"}
+        image_params = IMAGE_PARAM_KEYS | {"i2i_image"}
         source_images = _collect_images_with_replies(event.message_obj.message)
         parse_images = []
         source_index = 0
@@ -1498,7 +1523,7 @@ class Plugin(Star):
     def _parse_presets_from_params(
         self,
         raw_params: str,
-    ) -> tuple[list[str], dict[str, str], list[str]]:
+    ) -> tuple[list[str], dict[str, str], list[str], list[tuple[str, str]]]:
         """从参数中解析预设列表和其他参数
         
         Returns:
@@ -1544,17 +1569,7 @@ class Plugin(Star):
                     if existing and existing != value:
                         raise ValueError(f"cs{cs_num} 重复且不一致")
                     cs_entries[cs_num] = value
-                elif key in {
-                    "i2i",
-                    "图生图",
-                    "vibe_transfer",
-                    "v_t",
-                    "氛围转移",
-                    "character_keep",
-                    "c_k",
-                    "ck",
-                    "角色保持",
-                }:
+                elif key in IMAGE_PARAM_KEYS | CHARACTER_KEEP_MODE_KEYS:
                     image_params.append((key, value))
                 else:
                     other_params[key] = value
