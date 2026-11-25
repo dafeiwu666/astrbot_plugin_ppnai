@@ -3,26 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 from collections.abc import AsyncIterator
 
 from astrbot.api.message_components import Image, Node, Nodes, Plain
 
-from .character_keep_store import replace_nai_tag
-from .image_io import resolve_image
-from .params import _collect_images_with_replies
-
-
-async def _save_preview(plugin, event, resource_key: str) -> None:
-    images = _collect_images_with_replies(event.message_obj.message)
-    if not images:
-        return
-    data_uri = await resolve_image(images[0])
-    await asyncio.to_thread(
-        plugin.preview_manager.save_or_replace,
-        [resource_key],
-        base64.b64decode(data_uri.split(",", 1)[1]),
-    )
+from .drawing_recipe import prepare_drawing_recipe
 
 
 async def handle_cs(plugin, event) -> AsyncIterator:
@@ -30,7 +15,7 @@ async def handle_cs(plugin, event) -> AsyncIterator:
     user_id = plugin._get_user_id(event)
 
     if raw:
-        yield event.plain_result("查看角色Tag库请使用 /cs；添加角色请使用 /cs添加 名称 后换行填写 NovelAI Tag。")
+        yield event.plain_result("查看角色库请使用 /cs。添加角色用 /cs添加 名称，换行填写绘图参数。")
         return
 
     show_all = plugin._check_resource_admin(event) or plugin.config.general.list_all_resources
@@ -38,7 +23,7 @@ async def handle_cs(plugin, event) -> AsyncIterator:
         plugin.cs_store.list_grouped, None if show_all else user_id
     )
     if not grouped:
-        yield event.plain_result("角色Tag库为空，可使用 /cs添加 名称\n角色 NovelAI Tag 添加角色。")
+        yield event.plain_result("角色库为空，可使用 /cs添加 名称\ntag=角色标签 添加角色。")
         return
     result = "角色Tag库：\n" + "\n".join(
         f"- {owner}:\n" + "\n".join(f"  • {name}" for name in names)
@@ -51,7 +36,7 @@ async def handle_cs_add(plugin, event) -> AsyncIterator:
     raw = event.message_str.removeprefix("cs添加").strip()
     user_id = plugin._get_user_id(event)
     if not raw:
-        yield event.plain_result("请按格式添加：/cs添加 夕立\nyuudachi kai ni (Kancolle)")
+        yield event.plain_result("请按格式添加：/cs添加 夕立\ntag=yuudachi kai ni (Kancolle)")
         return
 
     lines = raw.splitlines()
@@ -60,23 +45,22 @@ async def handle_cs_add(plugin, event) -> AsyncIterator:
         key, value = name.split("=", 1)
         if key.strip().lower() in {"name", "名称", "na"}:
             name = value.strip()
-    tags = "\n".join(lines[1:]).strip()
-    if not name or not tags:
-        yield event.plain_result("名称和 NovelAI Tag 均不能为空。格式：/cs添加 夕立\nyuudachi kai ni (Kancolle)")
+    content = "\n".join(lines[1:]).strip()
+    if not name or not content:
+        yield event.plain_result("名称和绘图内容均不能为空。格式：/cs添加 夕立\ntag=yuudachi kai ni (Kancolle)")
         return
 
     try:
-        await asyncio.to_thread(
-            plugin.cs_store.write, user_id, name, tags, overwrite=False
-        )
+        recipe = await prepare_drawing_recipe(plugin, event, content)
+        await asyncio.to_thread(plugin.cs_store.write, user_id, name, recipe, overwrite=False)
     except FileExistsError:
-        yield event.plain_result(f"角色 {name} 已存在；修改请使用 /ccs {name} 新Tag。")
+        yield event.plain_result(f"角色 {name} 已存在，修改请使用 /ccs {name} 后换行填写绘图参数。")
         return
     except Exception as exc:  # noqa: BLE001
         yield event.plain_result(f"保存角色Tag失败：{exc}")
         return
 
-    yield event.plain_result(f"✅ 角色 {name} 已加入角色Tag库")
+    yield event.plain_result(f"✅ 角色预设 {name} 已保存")
 
 
 async def handle_dcs(plugin, event) -> AsyncIterator:
@@ -118,22 +102,22 @@ async def handle_scs(plugin, event) -> AsyncIterator:
         yield event.plain_result(result)
         return
 
-    resolved_tag = await asyncio.to_thread(
-        plugin.cs_store.resolve_tag,
+    resolved = await asyncio.to_thread(
+        plugin.cs_store.resolve_recipe,
         target_user,
         name,
         include_all=plugin.config.general.list_all_resources
         or plugin._check_resource_admin(event),
     )
-    if resolved_tag is None:
+    if resolved is None:
         yield event.plain_result(f"角色Tag {name} 不存在")
         return
 
-    owner_id, content = resolved_tag
+    owner_id, recipe = resolved
     preview = await asyncio.to_thread(
-        plugin.preview_manager.read, f"ck:{owner_id}:{name}"
+        recipe.preview_bytes, plugin.preview_manager, f"ck:{owner_id}:{name}"
     )
-    node_content = [Plain(f"📝 角色Tag：{name}\n\n{content}")]
+    node_content = [Plain(f"📝 角色预设：{name}\n\n{recipe.visible_content()}")]
     if preview is not None:
         node_content.append(Image.fromBytes(preview))
     yield event.chain_result([
@@ -150,7 +134,7 @@ async def handle_scs(plugin, event) -> AsyncIterator:
 async def handle_ccs(plugin, event) -> AsyncIterator:
     raw = event.message_str.removeprefix("ccs").strip()
     if not raw:
-        yield event.plain_result("请提供名称和新的 NovelAI Tag，例如：/ccs 夕立\nyuudachi kai ni (Kancolle)")
+        yield event.plain_result("请提供名称和新的绘图参数，例如：/ccs 夕立\ntag=yuudachi kai ni (Kancolle)")
         return
 
     lines = raw.splitlines()
@@ -162,28 +146,27 @@ async def handle_ccs(plugin, event) -> AsyncIterator:
         return
 
     target_user = plugin._get_user_id(event)
-    if plugin._check_resource_admin(event) and len(parts) >= 3:
-        target_user, name = parts[0], parts[1]
-        new_tag = " ".join(parts[2:]).strip()
+    if remainder and await asyncio.to_thread(plugin.cs_store.exists, target_user, first_line):
+        name, new_content = first_line, remainder
+    elif plugin._check_resource_admin(event) and len(parts) >= 2 and await asyncio.to_thread(
+        plugin.cs_store.exists, parts[0], parts[1]
+    ):
+        target_user, name = parts[:2]
+        new_content = "\n".join(part for part in (" ".join(parts[2:]), remainder) if part)
     else:
         name = parts[0]
-        new_tag = first_line[len(name) :].strip()
-    if remainder:
-        new_tag = f"{new_tag}\n{remainder}".strip()
-    if not new_tag:
-        yield event.plain_result("新的角色Tag不能为空")
+        new_content = "\n".join(part for part in (first_line[len(name):].strip(), remainder) if part)
+    if not new_content:
+        yield event.plain_result("新的绘图内容不能为空")
         return
-
-    if not await asyncio.to_thread(plugin.cs_store.exists, target_user, name):
+    try:
+        previous = await asyncio.to_thread(plugin.cs_store.read_recipe, target_user, name)
+        recipe = await prepare_drawing_recipe(plugin, event, new_content, previous)
+        await asyncio.to_thread(plugin.cs_store.write, target_user, name, recipe, overwrite=True)
+    except FileNotFoundError:
         yield event.plain_result(f"角色Tag {name} 不存在")
         return
-
-    content = await asyncio.to_thread(plugin.cs_store.read, target_user, name)
-    updated, replaced = replace_nai_tag(content, new_tag)
-    await asyncio.to_thread(plugin.cs_store.write, target_user, name, updated, overwrite=True)
-    await _save_preview(plugin, event, f"ck:{target_user}:{name}")
-
-    if replaced:
-        yield event.plain_result(f"✅ 角色Tag {name} 已更新")
-    else:
-        yield event.plain_result(f"✅ 角色Tag {name} 已覆盖")
+    except (ValueError, OSError, RuntimeError) as exc:
+        yield event.plain_result(f"保存角色预设失败：{exc}")
+        return
+    yield event.plain_result(f"✅ 角色预设 {name} 已更新")

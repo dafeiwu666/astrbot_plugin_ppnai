@@ -3,14 +3,16 @@
 import asyncio
 import json
 from pathlib import Path
+from threading import RLock
 
 from pydantic import BaseModel, Field
 
+from .drawing_recipe import DrawingRecipe, write_recipe_file
 
-class Preset(BaseModel):
+
+class Preset(DrawingRecipe):
     """单个预设"""
     title: str = Field(description="预设标题")
-    content: str = Field(description="预设内容（提示词）")
     owner_id: str = Field(default="system", description="创建者标识")
 
 
@@ -26,6 +28,7 @@ class PresetManager:
         self.data_file = data_dir / "presets.json"
         self.data_dir = data_dir
         self._store: PresetStore | None = None
+        self._lock = RLock()
     
     def _ensure_dir(self):
         """确保数据目录存在"""
@@ -33,29 +36,22 @@ class PresetManager:
     
     def _load(self) -> PresetStore:
         """加载预设数据"""
-        if self._store is not None:
-            return self._store
-        
-        self._ensure_dir()
-        if self.data_file.exists():
-            try:
+        with self._lock:
+            if self._store is not None:
+                return self._store
+
+            self._ensure_dir()
+            if self.data_file.exists():
                 data = json.loads(self.data_file.read_text("utf-8"))
                 self._store = PresetStore.model_validate(data)
-            except Exception:
+            else:
                 self._store = PresetStore()
-        else:
-            self._store = PresetStore()
-        return self._store
+            return self._store
     
-    def _save(self):
-        """保存预设数据"""
-        if self._store is None:
-            return
-        self._ensure_dir()
-        self.data_file.write_text(
-            self._store.model_dump_json(indent=2),
-            "utf-8"
-        )
+    def _save(self, presets: dict[str, Preset]) -> None:
+        store = PresetStore(presets=presets)
+        write_recipe_file(self.data_file, store.model_dump_json(indent=2, exclude_unset=True))
+        self._store = store
     
     def list_presets(self, owner_id: str | None = None) -> list[str]:
         """获取所有预设标题列表"""
@@ -87,35 +83,35 @@ class PresetManager:
             return None
         return preset
     
-    def add_preset(self, title: str, content: str, owner_id: str = "system") -> bool:
+    def add_preset(self, title: str, content: str | DrawingRecipe, owner_id: str = "system") -> bool:
         """
         添加预设
         返回: True 表示添加成功，False 表示已存在同名预设
         """
-        store = self._load()
-        if title in store.presets:
-            return False
-        store.presets[title] = Preset(title=title, content=content, owner_id=owner_id)
-        self._save()
+        with self._lock:
+            presets = self._load().presets
+            if title in presets:
+                return False
+            recipe = DrawingRecipe(content=content) if isinstance(content, str) else content
+            preset = Preset(title=title, owner_id=owner_id, **recipe.model_dump(exclude_unset=True))
+            self._save({**presets, title: preset})
         return True
     
     def update_preset(
-        self, title: str, content: str, owner_id: str | None = None
+        self, title: str, content: str | DrawingRecipe, owner_id: str | None = None
     ) -> bool:
         """
         更新预设
         返回: True 表示更新成功，False 表示预设不存在
         """
-        store = self._load()
-        if title not in store.presets:
-            return False
-        preset = store.presets[title]
-        if owner_id is not None and preset.owner_id != owner_id:
-            return False
-        store.presets[title] = Preset(
-            title=title, content=content, owner_id=preset.owner_id
-        )
-        self._save()
+        with self._lock:
+            presets = self._load().presets
+            preset = presets.get(title)
+            if preset is None or (owner_id is not None and preset.owner_id != owner_id):
+                return False
+            recipe = DrawingRecipe(content=content) if isinstance(content, str) else content
+            replacement = Preset(title=title, owner_id=preset.owner_id, **recipe.model_dump(exclude_unset=True))
+            self._save({**presets, title: replacement})
         return True
     
     def delete_preset(self, title: str, owner_id: str | None = None) -> bool:
@@ -123,19 +119,20 @@ class PresetManager:
         删除预设
         返回: True 表示删除成功，False 表示预设不存在
         """
-        store = self._load()
-        if title not in store.presets:
-            return False
-        if owner_id is not None and store.presets[title].owner_id != owner_id:
-            return False
-        del store.presets[title]
-        self._save()
+        with self._lock:
+            presets = dict(self._load().presets)
+            preset = presets.get(title)
+            if preset is None or (owner_id is not None and preset.owner_id != owner_id):
+                return False
+            del presets[title]
+            self._save(presets)
         return True
     
     def reload(self):
         """重新加载数据"""
-        self._store = None
-        self._load()
+        with self._lock:
+            self._store = None
+            self._load()
 
     async def alist_presets(self) -> list[str]:
         return await asyncio.to_thread(self.list_presets)

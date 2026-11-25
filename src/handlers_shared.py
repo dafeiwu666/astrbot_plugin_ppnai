@@ -6,8 +6,10 @@ Keep handler modules thin by extracting repeated parameter merging and
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
+from .drawing_recipe import check_drawing_slots
 from .image_library import LibraryImage
 from .image_params import character_keep_key, character_keep_param, is_character_keep_source
 from .models import Req
@@ -15,6 +17,48 @@ from .params import parse_req, req_model_assembler
 
 if TYPE_CHECKING:
     from .config import Config
+    from .drawing_recipe import DrawingRecipe
+
+
+async def load_character_recipes(store, user_id: str, names: list[str], *, include_all: bool) -> list[tuple[str, DrawingRecipe]]:
+    recipes = []
+    for name in dict.fromkeys(names):
+        try:
+            resolved = await asyncio.to_thread(store.resolve_recipe, user_id, name, include_all=include_all)
+        except FileNotFoundError:
+            resolved = None
+        if resolved is None:
+            raise ValueError(f"角色预设 {name} 不存在，请先使用 /cs添加 创建")
+        recipes.append(resolved)
+    return recipes
+
+
+def combine_drawing_recipes(
+    presets: list[DrawingRecipe], characters: list[tuple[str, DrawingRecipe]],
+) -> tuple[list[str], list[str], dict[str, str], list[str], dict[str, str]]:
+    recipes = list(presets)
+    character_tags: list[str] = []
+    for _, recipe in characters:
+        tags, parameters = recipe.parameters_without_tag()
+        character_tags.extend(tags)
+        if parameters:
+            recipes.append(recipe.model_copy(update={"content": parameters}))
+    recipe_sources: dict[str, str] = {}
+    return (
+        [recipe.runtime_content(recipe_sources) for recipe in recipes],
+        [recipe.visible_content() for recipe in recipes],
+        {key: image for recipe in recipes for key, image in recipe.images.items()},
+        character_tags,
+        recipe_sources,
+    )
+
+
+def drawing_slot_groups(direct: str, presets, characters, character_names: list[str]) -> list[tuple[str, str]]:
+    return [
+        ("本次指令", direct),
+        *((f"预设 {preset.title}", preset.visible_content()) for preset in presets),
+        *((f"CS {name}", recipe.visible_content()) for name, (_, recipe) in zip(dict.fromkeys(character_names), characters)),
+    ]
 
 
 def _falsy(value: str) -> bool:
@@ -236,6 +280,8 @@ async def parse_llm_overrides(
     config: Config,
     is_whitelisted: bool,
     character_keep_images: dict[int, str],
+    vibe_transfer_images: list[str] | None = None,
+    vibe_transfer_settings: list[dict[str, str]] | None = None,
 ) -> Req | None:
     blocked_keys = {
         "i2i", "vibe_transfer", "vibe_transfer_info_extract", "vibe_transfer_ref_strength",
@@ -250,6 +296,11 @@ async def parse_llm_overrides(
     for index, image in sorted(character_keep_images.items()):
         lines.append(f"{character_keep_key('character_keep', index)}=true")
         images.append(LibraryImage(image))
+    if vibe_transfer_images and vibe_transfer_settings and any(vibe_transfer_settings):
+        for image, settings in zip(vibe_transfer_images, vibe_transfer_settings, strict=True):
+            lines.append("vibe_transfer=true")
+            lines.extend(f"{key}={value}" for key, value in settings.items())
+            images.append(LibraryImage(image))
     if not lines:
         return None
     return await parse_req("\n".join(lines), images, config, is_whitelisted)
@@ -339,15 +390,7 @@ def apply_explicit_overrides(
     ):
         req.addition.multi_role_list = user_req.addition.multi_role_list
 
-    if (
-        user_req.addition
-        and req.addition
-        and user_req.addition.vibe_transfer_list
-        and (
-            ("vibe_transfer_info_extract" in explicit_ids)
-            or ("vibe_transfer_ref_strength" in explicit_ids)
-        )
-    ):
+    if user_req.addition.vibe_transfer_list:
         req.addition.vibe_transfer_list = user_req.addition.vibe_transfer_list
 
     if "tag" in explicit_ids:

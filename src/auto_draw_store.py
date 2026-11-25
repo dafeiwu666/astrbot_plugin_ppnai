@@ -23,8 +23,10 @@ class AutoDrawSession(BaseModel):
     cs_names: list[str] = Field(default_factory=list)
     i2i_image: str | None = None
     vibe_transfer_images: list[str] = Field(default_factory=list)
+    vibe_transfer_settings: list[dict[str, str]] = Field(default_factory=list)
     character_keep_images: dict[int, str] = Field(default_factory=dict)
     character_keep_overrides: str = ""
+    recipe_reference_signature: str | None = None
     vision_images: list[str] = Field(default_factory=list)
 
     @model_validator(mode="before")

@@ -14,14 +14,18 @@ from astrbot.api.message_components import Image, Node, Nodes, Plain
 from astrbot.api.star import StarTools
 
 from .data_source import GenerateError, wrapped_generate
-from .image_params import is_character_keep_source, iter_key_values, resolve_image_params
+from .image_params import iter_key_values, resolve_image_params
+from .drawing_recipe import check_drawing_slots
 from .llm import ReturnToLLMError, llm_generate_advanced_req
 from .llm_utils import format_readable_error
 from .generation_report import format_generation_report, get_input_image_bytes
 from .params import _collect_images_with_replies
 from .handlers_shared import (
     apply_explicit_overrides,
+    combine_drawing_recipes,
+    drawing_slot_groups,
     extract_batch_count,
+    load_character_recipes,
     merge_nai_params,
     parse_llm_overrides,
 )
@@ -143,9 +147,11 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
             return
 
     raw_input = event.message_str.removeprefix("nai画图").strip()
-    preset_names, other_params, cs_names, image_params = (
-        plugin._parse_presets_from_params(raw_input)
-    )
+    try:
+        preset_names, other_params, cs_names, image_params = plugin._parse_presets_from_params(raw_input)
+    except ValueError as exc:
+        yield event.plain_result(str(exc))
+        return
 
     # 默认预设兜底：用户未指定任何 sN= 时，自动应用配置中的默认预设
     if not preset_names:
@@ -164,25 +170,6 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
 
     description = other_params.get("ds", "")
 
-    cs_tag_parts: list[str] = []
-    cs_resource_keys: list[str] = []
-    if cs_names:
-        for cs_name in cs_names:
-            resolved_tag = await asyncio.to_thread(
-                plugin.cs_store.resolve_tag,
-                user_id,
-                cs_name,
-                include_all=plugin.config.general.list_all_resources
-                or plugin._check_resource_admin(event),
-            )
-            if resolved_tag is None:
-                yield event.plain_result(f"角色Tag {cs_name} 不存在，请先使用 /cs添加 创建")
-                return
-            owner_id, character_tag = resolved_tag
-            if character_tag:
-                cs_tag_parts.append(character_tag)
-                cs_resource_keys.append(f"ck:{owner_id}:{cs_name}")
-
     reply_text = plugin._get_reply_text(event)
     if reply_text:
         if description:
@@ -190,7 +177,7 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
         else:
             description = f"参考：{reply_text}"
 
-    preset_contents: list[str] = []
+    presets = []
     preset_owner_filter = (
         None
         if plugin._check_resource_admin(event)
@@ -206,7 +193,17 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
         if preset is None:
             yield event.plain_result(f"预设 {preset_name} 不存在，使用 nai预设列表 查看可用预设")
             return
-        preset_contents.append(preset.content)
+        presets.append(preset)
+
+    try:
+        characters = await load_character_recipes(
+            plugin.cs_store, user_id, cs_names, include_all=preset_owner_filter is None,
+        ) if cs_names else []
+        check_drawing_slots(drawing_slot_groups(raw_input, presets, characters, cs_names))
+    except ValueError as exc:
+        yield event.plain_result(str(exc))
+        return
+    preset_contents, visible_contents, saved_images, cs_tag_parts, recipe_sources = combine_drawing_recipes(presets, characters)
 
     uploaded_images = _collect_images_with_replies(event.message_obj.message)
     try:
@@ -217,6 +214,8 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
             owner_id=plugin._get_resource_owner(event),
             allow_all=plugin._check_resource_admin(event)
             or plugin.config.general.list_all_resources,
+            saved_images=saved_images,
+            recipe_sources=recipe_sources,
         )
     except Exception as e:  # noqa: BLE001
         yield event.plain_result(f"图片参数解析失败：{format_readable_error(e)}")
@@ -235,7 +234,8 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
     merged_raw, wrappers, explicit_ids = merge_nai_params(preset_contents, raw_input)
     try:
         user_req = await parse_llm_overrides(
-            merged_raw, plugin.config, is_whitelisted, resolved_images.character_keep_images
+            merged_raw, plugin.config, is_whitelisted, resolved_images.character_keep_images,
+            resolved_images.vibe_transfer_images, resolved_images.vibe_transfer_settings,
         )
     except Exception as e:  # noqa: BLE001
         yield event.plain_result(f"参数解析失败：{format_readable_error(e)}")
@@ -248,6 +248,7 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
 
     if (
         not preset_contents
+        and not cs_tag_parts
         and not description
         and not vision_images
         and not i2i_image
@@ -262,15 +263,11 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
         )
         return
 
-    full_description_parts = list(reversed(preset_contents))
+    full_description_parts = list(reversed(visible_contents))
     if description:
         full_description_parts.append(description)
     full_description = "\n\n".join(full_description_parts)
-    resource_keys = [
-        *(f"preset:{name}" for name in preset_names),
-        *cs_resource_keys,
-        *resolved_images.resource_keys,
-    ]
+    resource_keys = resolved_images.resource_keys
 
     logger.debug(
         f"[nai画图] presets={preset_names}, description={description[:50] if description else 'None'}"
@@ -465,19 +462,8 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
             yield event.plain_result(help_msg)
         return
 
-    req, batch_count, preset_names, cs_names, cs_resource_keys = parsed
+    req, batch_count, _, _, resource_keys = parsed
     user_id = plugin._get_user_id(event)
-    resource_keys = [
-        *(f"preset:{name}" for name in preset_names),
-        *cs_resource_keys,
-    ]
-    for line in event.message_str.splitlines():
-        if "=" not in line:
-            continue
-        key, value = (part.strip() for part in line.split("=", 1))
-        if is_character_keep_source(key) or key in {"i2i", "vibe_transfer", "v_t"}:
-            if value.lower() not in {"true", "false", "1", "0", "on", "off", "是", "否", "关"}:
-                resource_keys.append(f"image:{value}")
 
     if quota_enabled and not is_whitelisted:
         can_use, reason = plugin.user_manager.can_use(user_id)

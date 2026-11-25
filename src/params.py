@@ -577,7 +577,7 @@ async def apply_other(value: str, data: dict[str, Any], **_):
     lambda _: "引用一张图重绘。`i2i=true` 使用附图或回复图，`i2i=图库名称` 使用指定图库图。",
 )
 async def apply_i2i(value: str, data: dict[str, Any], images: list[Image], **_):
-    if value.lower() in ("false", "0", "off", "关"):
+    if value.lower() in FALSE_VALUES:
         return
     if "addition" not in data:
         data["addition"] = {}
@@ -624,13 +624,14 @@ async def apply_i2i_cl(value: str, data: dict[str, Any], **_):
     ["氛围转移", "v_t"],
     lambda _: (
         "参考图片氛围。`v_t=true` 使用附图或回复图，`v_t=图库名称` 使用指定图库图。"
+        "多张参考可重复填写 `v_t`，各自的提取度和强度紧跟在对应图片之后。"
         "与 `c_k` 精准参考分开使用。"
     ),
 )
 async def apply_vibe_transfer(
     value: str, data: dict[str, Any], images: list[Image], ctx: "Config", **_
 ):
-    if value.lower() in ("false", "0", "off", "关"):
+    if value.lower() in FALSE_VALUES:
         return
     if "addition" not in data:
         data["addition"] = {}

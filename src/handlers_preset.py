@@ -6,13 +6,11 @@ Extracted from main.py to keep Plugin wiring lightweight.
 from __future__ import annotations
 
 import asyncio
-import base64
 from collections.abc import AsyncIterator
 
 from astrbot.api.message_components import Image, Node, Nodes, Plain
 
-from .image_io import resolve_image
-from .params import _collect_images_with_replies
+from .drawing_recipe import prepare_drawing_recipe
 
 
 async def handle_preset_list(plugin, event) -> AsyncIterator:
@@ -54,9 +52,9 @@ async def handle_preset_view(plugin, event) -> AsyncIterator:
         return
 
     preview = await asyncio.to_thread(
-        plugin.preview_manager.read, f"preset:{title}"
+        preset.preview_bytes, plugin.preview_manager, f"preset:{title}"
     )
-    content = [Plain(f"📝 预设 #{title}\n\n{preset.content}")]
+    content = [Plain(f"📝 预设 #{title}\n\n{preset.visible_content()}")]
     if preview is not None:
         content.append(Image.fromBytes(preview))
     yield event.chain_result([
@@ -99,23 +97,19 @@ async def handle_preset_add(plugin, event) -> AsyncIterator:
         yield event.plain_result(f"预设 #{title} 已存在，如需修改请先nai预设修改")
         return
 
-    await asyncio.to_thread(
-        plugin.preset_manager.add_preset,
-        title,
-        content,
-        plugin._get_resource_owner(event),
-    )
-    images = _collect_images_with_replies(event.message_obj.message)
-    if images:
-        preview_data = await resolve_image(images[0])
-        encoded = preview_data.split(",", 1)[1]
-        await asyncio.to_thread(
-            plugin.preview_manager.save_or_replace,
-            [f"preset:{title}"],
-            base64.b64decode(encoded),
+    try:
+        recipe = await prepare_drawing_recipe(plugin, event, content)
+        added = await asyncio.to_thread(
+            plugin.preset_manager.add_preset, title, recipe, plugin._get_resource_owner(event)
         )
+    except (ValueError, OSError, RuntimeError) as exc:
+        yield event.plain_result(f"预设保存失败：{exc}")
+        return
+    if not added:
+        yield event.plain_result(f"预设 #{title} 已存在，如需修改请先nai预设修改")
+        return
     preview = content[:200] + ("..." if len(content) > 200 else "")
-    yield event.plain_result(f"✅ 预设 #{title} 添加成功！\n\n预览：\n{preview}")
+    yield event.plain_result(f"✅ 预设 #{title} 添加成功！\n\n内容：\n{preview}")
 
 
 async def handle_preset_modify(plugin, event) -> AsyncIterator:
@@ -135,16 +129,15 @@ async def handle_preset_modify(plugin, event) -> AsyncIterator:
         yield event.plain_result(f"预设 #{title} 不存在或无权修改")
         return
 
-    content = lines[1]
-    await asyncio.to_thread(plugin.preset_manager.update_preset, title, content)
-    images = _collect_images_with_replies(event.message_obj.message)
-    if images:
-        preview_data = await resolve_image(images[0])
-        await asyncio.to_thread(
-            plugin.preview_manager.save_or_replace,
-            [f"preset:{title}"],
-            base64.b64decode(preview_data.split(",", 1)[1]),
-        )
+    try:
+        recipe = await prepare_drawing_recipe(plugin, event, lines[1], existing)
+        updated = await asyncio.to_thread(plugin.preset_manager.update_preset, title, recipe, owner_id)
+    except (ValueError, OSError, RuntimeError) as exc:
+        yield event.plain_result(f"预设保存失败：{exc}")
+        return
+    if not updated:
+        yield event.plain_result(f"预设 #{title} 不存在或无权修改")
+        return
     yield event.plain_result(f"✅ 预设 #{title} 修改成功")
 
 

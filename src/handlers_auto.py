@@ -8,7 +8,9 @@ from astrbot.api.message_components import Image, Node, Nodes, Plain
 from astrbot.api.provider import LLMResponse
 
 from .data_source import wrapped_generate
+from .drawing_recipe import check_drawing_slots, recipe_reference_signature
 from .image_io import resolve_image
+from .image_library import LibraryImage
 from .llm import llm_generate_advanced_req
 from .llm_utils import format_readable_error
 from .generation_report import format_generation_report, get_input_image_bytes
@@ -16,7 +18,10 @@ from .params import RELATED_FIELDS_MAP, _collect_images_with_replies
 from .image_params import character_keep_param, iter_key_values, resolve_image_params
 from .handlers_shared import (
     apply_explicit_overrides,
+    combine_drawing_recipes,
+    drawing_slot_groups,
     extract_batch_count,
+    load_character_recipes,
     merge_nai_params,
     parse_llm_overrides,
 )
@@ -42,9 +47,10 @@ async def _enable_auto_draw(
     umo = event.unified_msg_origin
     user_id = plugin._get_user_id(event)
     resource_owner_id = plugin._get_resource_owner(event, user_id)
-    preset_names, _other_params, cs_names, image_params = (
-        plugin._parse_presets_from_params(raw_input)
-    )
+    try:
+        preset_names, _other_params, cs_names, image_params = plugin._parse_presets_from_params(raw_input)
+    except ValueError as exc:
+        return False, str(exc)
 
     # 默认预设兜底：用户未指定任何 sN= 时，自动应用配置中的默认预设
     if not preset_names:
@@ -61,10 +67,10 @@ async def _enable_auto_draw(
             else:
                 preset_names = [default_name]
 
-    if require_preset and not preset_names:
-        return False, "请使用键值对格式设置预设，例如：\nnai自动画图\ns1=猫娘"
+    if require_preset and not (preset_names or cs_names):
+        return False, "请用 s1 或 cs1 指定绘图预设，例如：\nnai自动画图\ncs1=夕立"
 
-    preset_contents: list[str] = []
+    presets = []
     for preset_name in preset_names:
         is_configured_default = preset_name == (
             plugin.config.defaults.default_preset or ""
@@ -79,19 +85,17 @@ async def _enable_auto_draw(
         )
         if preset is None:
             return False, f"预设 {preset_name} 不存在，使用 nai预设列表 查看可用预设"
-        preset_contents.append(preset.content)
+        presets.append(preset)
 
-    if cs_names:
-        for cs_name in cs_names:
-            resolved_tag = await asyncio.to_thread(
-                plugin.cs_store.resolve_tag,
-                user_id,
-                cs_name,
-                include_all=plugin.config.general.list_all_resources
-                or plugin._check_resource_admin(event),
-            )
-            if resolved_tag is None:
-                return False, f"角色Tag {cs_name} 不存在，请先使用 /cs添加 创建"
+    allow_all = plugin._check_resource_admin(event) or plugin.config.general.list_all_resources
+    try:
+        characters = await load_character_recipes(
+            plugin.cs_store, user_id, cs_names, include_all=allow_all,
+        ) if cs_names else []
+        check_drawing_slots(drawing_slot_groups(raw_input, presets, characters, cs_names))
+    except ValueError as exc:
+        return False, str(exc)
+    preset_contents, _, saved_images, _, recipe_sources = combine_drawing_recipes(presets, characters)
 
     uploaded_images = _collect_images_with_replies(event.message_obj.message)
     try:
@@ -100,25 +104,27 @@ async def _enable_auto_draw(
             uploaded_images,
             plugin.image_library,
             owner_id=resource_owner_id,
-            allow_all=plugin._check_resource_admin(event)
-            or plugin.config.general.list_all_resources,
+            allow_all=allow_all,
+            saved_images=saved_images,
+            recipe_sources=recipe_sources,
         )
     except Exception as e:  # noqa: BLE001
         return False, f"图片参数解析失败：{format_readable_error(e)}"
 
     direct_params, _, _ = merge_nai_params([], raw_input)
-    reference_keys = {"model", *RELATED_FIELDS_MAP["character_keep"]}
+    reference_keys = {"model", "i2i", *RELATED_FIELDS_MAP["character_keep"], *RELATED_FIELDS_MAP["i2i"]}
     character_keep_overrides = "\n".join(
         f"{key}={value}"
         for key, value in iter_key_values([direct_params])
         if key in reference_keys or character_keep_param(key)
     )
     merged_raw, _, explicit_ids = merge_nai_params(preset_contents, character_keep_overrides)
-    if resolved_images.character_keep_images or any(character_keep_param(key) for key in explicit_ids):
+    if resolved_images.summary() or any(character_keep_param(key) for key in explicit_ids):
         is_whitelisted = await asyncio.to_thread(plugin.user_manager.is_whitelisted, user_id)
         try:
             await parse_llm_overrides(
-                merged_raw, plugin.config, is_whitelisted, resolved_images.character_keep_images
+                merged_raw, plugin.config, is_whitelisted, resolved_images.character_keep_images,
+                resolved_images.vibe_transfer_images, resolved_images.vibe_transfer_settings,
             )
         except Exception as e:  # noqa: BLE001
             return False, f"参数解析失败：{format_readable_error(e)}"
@@ -135,13 +141,14 @@ async def _enable_auto_draw(
         "presets": preset_names,
         "opener_user_id": user_id,
         "resource_owner_id": resource_owner_id,
-        "allow_all_resources": plugin._check_resource_admin(event)
-        or plugin.config.general.list_all_resources,
+        "allow_all_resources": allow_all,
         "cs_names": cs_names,
         "i2i_image": resolved_images.i2i_image,
         "vibe_transfer_images": resolved_images.vibe_transfer_images,
+        "vibe_transfer_settings": resolved_images.vibe_transfer_settings,
         "character_keep_images": resolved_images.character_keep_images,
         "character_keep_overrides": character_keep_overrides,
+        "recipe_reference_signature": recipe_reference_signature([*presets, *(recipe for _, recipe in characters)]),
         "vision_images": vision_images,
         "resource_keys": resolved_images.resource_keys,
     }
@@ -283,7 +290,7 @@ async def handle_llm_response_auto_draw(plugin, event, resp: LLMResponse):
                 await plugin.persist_auto_draw_info()
             return
 
-    preset_contents: list[str] = []
+    loaded_presets = []
     resource_owner_id = auto_info.get("resource_owner_id") or plugin._get_resource_owner(
         event, opener_user_id
     )
@@ -305,7 +312,23 @@ async def handle_llm_response_auto_draw(plugin, event, resp: LLMResponse):
                 )
             )
             return
-        preset_contents.append(preset.content)
+        loaded_presets.append(preset)
+
+    try:
+        characters = await load_character_recipes(
+            plugin.cs_store, opener_user_id, cs_names,
+            include_all=auto_info.get("allow_all_resources", plugin.config.general.list_all_resources),
+        ) if cs_names else []
+        check_drawing_slots(drawing_slot_groups(
+            auto_info.get("character_keep_overrides", ""), loaded_presets, characters, cs_names,
+        ))
+        current_signature = recipe_reference_signature([*loaded_presets, *(recipe for _, recipe in characters)])
+        if auto_info.get("recipe_reference_signature") not in {None, current_signature}:
+            raise ValueError("预设或 CS 的参考图参数已修改，请重新开启自动画图")
+    except ValueError as exc:
+        await event.send(event.plain_result(f"🎨 自动画图失败：{exc}"))
+        return
+    preset_contents, visible_contents, _, cs_tag_parts, _ = combine_drawing_recipes(loaded_presets, characters)
 
     logger.debug(
         f"[nai] Auto draw: generating from response ({len(ai_response)} chars), "
@@ -317,9 +340,10 @@ async def handle_llm_response_auto_draw(plugin, event, resp: LLMResponse):
         event,
         ai_response,
         preset_contents,
+        visible_contents,
+        cs_tag_parts,
         opener_user_id,
         is_whitelisted,
-        cs_names,
         auto_info,
     )
     if hasattr(plugin, "_create_background_task"):
@@ -339,9 +363,10 @@ async def _auto_draw_generate(
     event,
     ai_response: str,
     preset_contents: list[str],
+    visible_contents: list[str],
+    cs_tag_parts: list[str],
     opener_user_id: str,
     is_whitelisted: bool,
-    cs_names: list[str],
     auto_info: dict,
 ):
     quota_enabled = plugin.config.quota.enable_quota
@@ -396,45 +421,17 @@ async def _auto_draw_generate(
                     preset_contents, auto_info.get("character_keep_overrides", "")
                 )
                 user_req = await parse_llm_overrides(
-                    merged_raw, plugin.config, is_whitelisted, auto_info.get("character_keep_images", {})
+                    merged_raw, plugin.config, is_whitelisted, auto_info.get("character_keep_images", {}),
+                    auto_info.get("vibe_transfer_images"), auto_info.get("vibe_transfer_settings"),
                 )
 
                 i2i_image = auto_info.get("i2i_image")
                 vibe_transfer_images = auto_info.get("vibe_transfer_images")
-                vision_images = auto_info.get("vision_images")
+                vision_images = [LibraryImage(data) for data in auto_info.get("vision_images", [])]
 
-                cs_tag_parts: list[str] = []
-                cs_resource_keys: list[str] = []
-                if cs_names:
-                    for cs_name in cs_names:
-                        resolved_tag = await asyncio.to_thread(
-                            plugin.cs_store.resolve_tag,
-                            opener_user_id,
-                            cs_name,
-                            include_all=auto_info.get(
-                                "allow_all_resources",
-                                plugin.config.general.list_all_resources,
-                            ),
-                        )
-                        if resolved_tag is None:
-                            await event.send(
-                                event.plain_result(
-                                    f"🎨 自动画图失败：角色Tag {cs_name} 不存在"
-                                )
-                            )
-                            return
-                        owner_id, character_tag = resolved_tag
-                        if character_tag:
-                            cs_tag_parts.append(character_tag)
-                            cs_resource_keys.append(f"ck:{owner_id}:{cs_name}")
-
-                full_parts = list(reversed(preset_contents)) + [ai_response_with_prefix]
+                full_parts = list(reversed(visible_contents)) + [ai_response_with_prefix]
                 full_instructions = "\n\n".join(full_parts)
-                resource_keys = [
-                    *(f"preset:{name}" for name in presets),
-                    *cs_resource_keys,
-                    *auto_info.get("resource_keys", []),
-                ]
+                resource_keys = [key for key in auto_info.get("resource_keys", []) if key.startswith("image:")]
 
                 await event.send(event.plain_result(f"🎨 自动画图中...{queue_status}"))
 
