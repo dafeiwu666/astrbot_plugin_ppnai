@@ -5,9 +5,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 
-from astrbot.api.message_components import Image, Node, Nodes, Plain
-
 from .drawing_recipe import prepare_drawing_recipe
+from .handlers_shared import drawing_recipe_view
 
 
 async def handle_cs(plugin, event) -> AsyncIterator:
@@ -114,21 +113,9 @@ async def handle_scs(plugin, event) -> AsyncIterator:
         return
 
     owner_id, recipe = resolved
-    preview = await asyncio.to_thread(
-        recipe.preview_bytes, plugin.preview_manager, f"ck:{owner_id}:{name}"
+    yield await drawing_recipe_view(
+        event, recipe, f"📝 角色预设：{name}", plugin.preview_manager, f"ck:{owner_id}:{name}",
     )
-    node_content = [Plain(f"📝 角色预设：{name}\n\n{recipe.visible_content()}")]
-    if preview is not None:
-        node_content.append(Image.fromBytes(preview))
-    yield event.chain_result([
-        Nodes([
-            Node(
-                uin=event.get_sender_id(),
-                name=event.get_sender_name(),
-                content=node_content,
-            )
-        ])
-    ])
 
 
 async def handle_ccs(plugin, event) -> AsyncIterator:

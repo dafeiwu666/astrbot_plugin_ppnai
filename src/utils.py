@@ -1,5 +1,11 @@
 from typing import overload
 
+
+def with_compact_parameter_aliases(*keys: str) -> tuple[str, ...]:
+    """Keep existing parameter names and add their underscore-free spellings."""
+    return tuple(dict.fromkeys((*keys, *(key.replace("_", "") for key in keys))))
+
+
 BASE64_FILE_MAGIC = [
     ("image/png", "iVBORw0KGgo"),
     ("image/jpeg", "/9j/4AAQ"),

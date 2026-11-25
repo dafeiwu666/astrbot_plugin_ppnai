@@ -10,23 +10,33 @@ from pydantic import BaseModel, Field
 from astrbot.api.message_components import Image
 
 from .image_io import resolve_image
+from .utils import with_compact_parameter_aliases
 
 FALSE_VALUES = {"false", "0", "off", "关", "否", "no"}
 TRUE_VALUES = {"true", "1", "on", "yes", "是"}
 I2I_KEYS = {"i2i", "图生图"}
-VIBE_TRANSFER_KEYS = {"vibe_transfer", "v_t", "氛围转移"}
+VIBE_TRANSFER_KEYS = set(with_compact_parameter_aliases("vibe_transfer", "v_t", "氛围转移"))
 VIBE_SETTING_PARAMS = {
-    **dict.fromkeys(("vibe_transfer_info_extract", "v_t_i_e", "氛围转移信息提取度"), "vibe_transfer_info_extract"),
-    **dict.fromkeys(("vibe_transfer_ref_strength", "v_t_r_s", "氛围转移参考强度"), "vibe_transfer_ref_strength"),
+    **dict.fromkeys(
+        with_compact_parameter_aliases("vibe_transfer_info_extract", "v_t_i_e", "氛围转移信息提取度"),
+        "vibe_transfer_info_extract",
+    ),
+    **dict.fromkeys(
+        with_compact_parameter_aliases("vibe_transfer_ref_strength", "v_t_r_s", "氛围转移参考强度"),
+        "vibe_transfer_ref_strength",
+    ),
 }
-CHARACTER_KEEP_KEYS = {"character_keep", "c_k", "ck", "角色保持"}
+CHARACTER_KEEP_KEYS = set(with_compact_parameter_aliases("character_keep", "c_k", "角色保持"))
 CHARACTER_KEEP_MODE_ALIASES = ["角色参考模式", "ck_mode", "c_k_m"]
-CHARACTER_KEEP_MODE_KEYS = {"character_keep_mode", *CHARACTER_KEEP_MODE_ALIASES}
+CHARACTER_KEEP_MODE_KEYS = set(with_compact_parameter_aliases("character_keep_mode", *CHARACTER_KEEP_MODE_ALIASES))
 CHARACTER_KEEP_STRENGTH_ALIASES = ["角色保持强度", "ck_strength", "c_k_s"]
 _CHARACTER_KEEP_PARAMS = {
     **dict.fromkeys(CHARACTER_KEEP_KEYS, "character_keep"),
     **dict.fromkeys(CHARACTER_KEEP_MODE_KEYS, "character_keep_mode"),
-    **dict.fromkeys(["character_keep_strength", *CHARACTER_KEEP_STRENGTH_ALIASES], "character_keep_strength"),
+    **dict.fromkeys(
+        with_compact_parameter_aliases("character_keep_strength", *CHARACTER_KEEP_STRENGTH_ALIASES),
+        "character_keep_strength",
+    ),
 }
 IMAGE_PARAM_KEYS = I2I_KEYS | VIBE_TRANSFER_KEYS | CHARACTER_KEEP_KEYS
 

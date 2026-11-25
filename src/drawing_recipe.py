@@ -16,11 +16,21 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from .image_io import resolve_image
-from .image_params import FALSE_VALUES, I2I_KEYS, TRUE_VALUES, VIBE_SETTING_PARAMS, VIBE_TRANSFER_KEYS, character_keep_param, is_character_keep_source, with_implicit_character_keep
+from .image_params import (
+    FALSE_VALUES,
+    I2I_KEYS,
+    TRUE_VALUES,
+    VIBE_SETTING_PARAMS,
+    VIBE_TRANSFER_KEYS,
+    character_keep_key,
+    character_keep_param,
+    with_implicit_character_keep,
+)
+from .utils import with_compact_parameter_aliases
 
 _I2I_SETTINGS = {
-    **dict.fromkeys(("i2i_force", "i_f", "重绘力度"), "i2i_force"),
-    **dict.fromkeys(("i2i_cl", "图片处理"), "i2i_cl"),
+    **dict.fromkeys(with_compact_parameter_aliases("i2i_force", "i_f", "重绘力度"), "i2i_force"),
+    **dict.fromkeys(with_compact_parameter_aliases("i2i_cl", "图片处理"), "i2i_cl"),
 }
 
 
@@ -35,6 +45,14 @@ class DrawingRecipe(BaseModel):
             key, separator, value = line.partition("=")
             lines.append(f"{key}=true" if separator and value.strip() in self.images else line)
         return "\n".join(lines)
+
+    def bound_image_sources(self) -> list[tuple[str, str]]:
+        """Return the parameter and image for each saved attachment in recipe order."""
+        return [
+            (key, self.images[value])
+            for key, value in recipe_pairs(self.content)
+            if value in self.images
+        ]
 
     def runtime_content(self, recipe_sources: dict[str, str]) -> str:
         lines = []
@@ -173,8 +191,8 @@ def _source_key(key: str) -> str | None:
         return "i2i"
     if key in VIBE_TRANSFER_KEYS:
         return "vibe_transfer"
-    if is_character_keep_source(key):
-        return key
+    if (ref := character_keep_param(key)) and ref[0] == "character_keep":
+        return character_keep_key(*ref)
     return None
 
 

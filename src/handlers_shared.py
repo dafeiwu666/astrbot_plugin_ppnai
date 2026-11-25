@@ -7,7 +7,10 @@ Keep handler modules thin by extracting repeated parameter merging and
 from __future__ import annotations
 
 import asyncio
+import base64
 from typing import TYPE_CHECKING
+
+from astrbot.api.message_components import Image, Node, Nodes, Plain
 
 from .drawing_recipe import check_drawing_slots
 from .image_library import LibraryImage
@@ -18,6 +21,28 @@ from .params import parse_req, req_model_assembler
 if TYPE_CHECKING:
     from .config import Config
     from .drawing_recipe import DrawingRecipe
+
+
+async def drawing_recipe_view(event, recipe: DrawingRecipe, title: str, preview_manager, resource_key: str):
+    attachments = recipe.bound_image_sources()
+    preview = await asyncio.to_thread(recipe.preview_bytes, preview_manager, resource_key)
+    sections = [[Plain(f"{title}\n\n{recipe.visible_content()}\n\n已保存参考图：{len(attachments)} 张")]]
+    for index, (key, data_uri) in enumerate(attachments, 1):
+        label = f"参考图 {index}（{key}）"
+        try:
+            data = base64.b64decode(data_uri.split(",", 1)[-1], validate=True)
+        except ValueError:
+            sections.append([Plain(f"{label} 无法读取")])
+        else:
+            sections.append([Plain(f"{label}\n"), Image.fromBytes(data)])
+    if preview is not None:
+        sections.append([Plain("预览图\n"), Image.fromBytes(preview)])
+    return event.chain_result([
+        Nodes([
+            Node(uin=event.get_sender_id(), name=event.get_sender_name(), content=section)
+            for section in sections
+        ])
+    ])
 
 
 async def load_character_recipes(store, user_id: str, names: list[str], *, include_all: bool) -> list[tuple[str, DrawingRecipe]]:

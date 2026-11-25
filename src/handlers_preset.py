@@ -8,9 +8,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 
-from astrbot.api.message_components import Image, Node, Nodes, Plain
-
 from .drawing_recipe import prepare_drawing_recipe
+from .handlers_shared import drawing_recipe_view
 
 
 async def handle_preset_list(plugin, event) -> AsyncIterator:
@@ -51,21 +50,9 @@ async def handle_preset_view(plugin, event) -> AsyncIterator:
         yield event.plain_result(f"预设 #{title} 不存在")
         return
 
-    preview = await asyncio.to_thread(
-        preset.preview_bytes, plugin.preview_manager, f"preset:{title}"
+    yield await drawing_recipe_view(
+        event, preset, f"📝 预设 #{title}", plugin.preview_manager, f"preset:{title}",
     )
-    content = [Plain(f"📝 预设 #{title}\n\n{preset.visible_content()}")]
-    if preview is not None:
-        content.append(Image.fromBytes(preview))
-    yield event.chain_result([
-        Nodes([
-            Node(
-                uin=event.get_sender_id(),
-                name=event.get_sender_name(),
-                content=content,
-            )
-        ])
-    ])
 
 
 async def handle_preset_add(plugin, event) -> AsyncIterator:

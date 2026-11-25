@@ -927,9 +927,7 @@ class Plugin(Star):
         character_details = []
         for name, (_, recipe) in zip(loaded_character_names, characters, strict=True):
             details = [f"CS {name} 的完整绘图内容", recipe.visible_content()]
-            bound_keys = dict.fromkeys(
-                key for key, value in iter_key_values([recipe.content]) if value in recipe.images
-            )
+            bound_keys = dict.fromkeys(key for key, _ in recipe.bound_image_sources())
             if bound_keys:
                 details.append(f"已保存参考图的参数：{'、'.join(bound_keys)}")
             character_details.append("\n".join(details))
