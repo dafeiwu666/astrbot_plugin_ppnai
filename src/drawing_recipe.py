@@ -13,7 +13,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from .image_io import resolve_image
 from .image_params import (
@@ -32,12 +32,39 @@ _I2I_SETTINGS = {
     **dict.fromkeys(with_compact_parameter_aliases("i2i_force", "i_f", "重绘力度"), "i2i_force"),
     **dict.fromkeys(with_compact_parameter_aliases("i2i_cl", "图片处理"), "i2i_cl"),
 }
+_LOCK_KEYS = {"lock", "locked", "ai_lock", "ailock", "锁定", "ai锁定"}
+_LOCK_TRUE_VALUES = TRUE_VALUES | {"t", "y", "开", "开启"}
+_LOCK_FALSE_VALUES = FALSE_VALUES | {"f", "n", "关闭"}
 
 
 class DrawingRecipe(BaseModel):
     content: str
     images: dict[str, str] = Field(default_factory=dict)
     preview_image: str | None = None
+    locked: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def extract_lock_setting(cls, data):
+        if not isinstance(data, dict) or not isinstance(content := data.get("content"), str):
+            return data
+        locked = None
+        lines = []
+        for line in content.splitlines(keepends=True):
+            key, separator, value = line.partition("=")
+            if not separator or key.strip().casefold() not in _LOCK_KEYS:
+                lines.append(line)
+                continue
+            value = value.strip().casefold()
+            if value not in _LOCK_TRUE_VALUES and value not in _LOCK_FALSE_VALUES:
+                raise ValueError("lock 需要布尔值，例如 true 或 false")
+            enabled = value in _LOCK_TRUE_VALUES
+            if locked is not None and locked != enabled:
+                raise ValueError("同一条目包含互相冲突的 lock 设置")
+            locked = enabled
+        if locked is None:
+            return data
+        return {**data, "content": "".join(lines).strip(), "locked": locked}
 
     def visible_content(self) -> str:
         lines = []
@@ -110,20 +137,23 @@ def numbered_selectors(params: Iterable[tuple[str, str]]) -> tuple[dict[str, dic
     return selectors, conflicts
 
 
-def inspect_drawing_slots(groups: Iterable[tuple[str, str]]) -> tuple[list[str], list[str]]:
+def inspect_drawing_slots(
+    groups: Iterable[tuple[str, str]], *, locked_sources: frozenset[str] = frozenset(),
+) -> tuple[list[str], list[str]]:
     """A precise-reference number or the i2i image belongs to one parameter source."""
     claims: dict[str, list[tuple[str, str]]] = defaultdict(list)
     conflicts = []
     vibe_sources: list[str] = []
     precise_sources: list[str] = []
     for label, content in groups:
+        locked = label in locked_sources
         group_claims: dict[str, dict[str, str]] = defaultdict(dict)
         current_vibe: str | None = None
         vibe_settings: dict[str, str] = {}
         precise_slots: set[str] = set()
         disabled_precise_slots: set[str] = set()
         for key, value in recipe_pairs(content):
-            line = f"{key}={value}"
+            line = "内容已锁定" if locked else f"{key}={value}"
             if ref := character_keep_param(key):
                 field, index = ref
                 slot = f"精准参考 #{index}"
@@ -156,7 +186,7 @@ def inspect_drawing_slots(groups: Iterable[tuple[str, str]]) -> tuple[list[str],
                 conflicts.append(f"{slot} 冲突：{label} 同时填写 {old_line} 与 {line}")
             group_claims[slot][field] = line
         for slot, fields in group_claims.items():
-            summary = "、".join(fields.values())
+            summary = "内容已锁定" if locked else "、".join(fields.values())
             claims[slot].append((label, summary))
             if slot in precise_slots and slot not in disabled_precise_slots:
                 precise_sources.append(f"{label}（{summary}）")
@@ -165,14 +195,17 @@ def inspect_drawing_slots(groups: Iterable[tuple[str, str]]) -> tuple[list[str],
     occupied = []
     for slot, entries in claims.items():
         detail = "；".join(f"{label}（{params}）" for label, params in entries)
-        occupied.append(f"{slot} · {detail}")
+        if any(label not in locked_sources for label, _ in entries):
+            occupied.append(f"{slot} · {detail}")
         if len(entries) > 1:
             conflicts.append(f"{slot} 冲突：{detail}")
     return occupied, conflicts
 
 
-def check_drawing_slots(groups: Iterable[tuple[str, str]]) -> None:
-    _, conflicts = inspect_drawing_slots(groups)
+def check_drawing_slots(
+    groups: Iterable[tuple[str, str]], *, locked_sources: frozenset[str] = frozenset(),
+) -> None:
+    _, conflicts = inspect_drawing_slots(groups, locked_sources=locked_sources)
     if conflicts:
         raise ValueError("\n".join(conflicts) + "\n请给不同来源使用互不重复的编号。")
 
@@ -199,7 +232,10 @@ def _source_key(key: str) -> str | None:
 async def prepare_drawing_recipe(plugin, event, content: str, previous: DrawingRecipe | None = None) -> DrawingRecipe:
     from .params import _collect_images_with_replies
 
-    check_drawing_slots([("保存内容", content)])
+    recipe = DrawingRecipe(content=content)
+    if not recipe.content.strip():
+        raise ValueError("请填写绘图参数")
+    check_drawing_slots([("保存内容", recipe.content)])
     uploads = deque(_collect_images_with_replies(event.message_obj.message))
     previous_images: dict[str, deque[str]] = defaultdict(deque)
     if previous:
@@ -209,7 +245,7 @@ async def prepare_drawing_recipe(plugin, event, content: str, previous: DrawingR
 
     bindings: dict[str, str] = {}
     lines = []
-    for key, value in with_implicit_character_keep(recipe_pairs(content)):
+    for key, value in with_implicit_character_keep(recipe_pairs(recipe.content)):
         source = _source_key(key)
         if source and value.lower() in TRUE_VALUES:
             # The gallery may have a numeric name such as "1".
@@ -230,7 +266,7 @@ async def prepare_drawing_recipe(plugin, event, content: str, previous: DrawingR
         lines.append(f"{key}={value}")
 
     preview = await resolve_image(uploads[-1]) if uploads else None
-    return DrawingRecipe(content="\n".join(lines), images=bindings, preview_image=preview)
+    return recipe.model_copy(update={"content": "\n".join(lines), "images": bindings, "preview_image": preview})
 
 
 def write_recipe_file(path: Path, content: str) -> None:

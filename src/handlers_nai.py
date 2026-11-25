@@ -23,9 +23,12 @@ from .params import _collect_images_with_replies
 from .handlers_shared import (
     apply_explicit_overrides,
     combine_drawing_recipes,
+    drawing_recipe_entries,
     drawing_slot_groups,
     extract_batch_count,
+    format_recipe_error,
     load_character_recipes,
+    locked_recipe_sources,
     merge_nai_params,
     parse_llm_overrides,
 )
@@ -199,10 +202,13 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
         characters = await load_character_recipes(
             plugin.cs_store, user_id, cs_names, include_all=preset_owner_filter is None,
         ) if cs_names else []
-        check_drawing_slots(drawing_slot_groups(raw_input, presets, characters, cs_names))
+        entries = drawing_recipe_entries(presets, characters, cs_names)
+        locked_sources = locked_recipe_sources(entries)
+        check_drawing_slots(drawing_slot_groups(raw_input, entries), locked_sources=locked_sources)
     except ValueError as exc:
         yield event.plain_result(str(exc))
         return
+    uses_locked_recipe = bool(locked_sources)
     preset_contents, visible_contents, saved_images, cs_tag_parts, recipe_sources = combine_drawing_recipes(presets, characters)
 
     uploaded_images = _collect_images_with_replies(event.message_obj.message)
@@ -218,7 +224,7 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
             recipe_sources=recipe_sources,
         )
     except Exception as e:  # noqa: BLE001
-        yield event.plain_result(f"图片参数解析失败：{format_readable_error(e)}")
+        yield event.plain_result(f"图片参数解析失败：{format_recipe_error(e, uses_locked_recipe=uses_locked_recipe)}")
         return
 
     try:
@@ -228,7 +234,7 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
             max_n=plugin.config.request.max_n,
         )
     except Exception as e:  # noqa: BLE001
-        yield event.plain_result(f"参数解析失败：{format_readable_error(e)}")
+        yield event.plain_result(f"参数解析失败：{format_recipe_error(e, uses_locked_recipe=uses_locked_recipe)}")
         return
 
     merged_raw, wrappers, explicit_ids = merge_nai_params(preset_contents, raw_input)
@@ -238,7 +244,7 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
             resolved_images.vibe_transfer_images, resolved_images.vibe_transfer_settings,
         )
     except Exception as e:  # noqa: BLE001
-        yield event.plain_result(f"参数解析失败：{format_readable_error(e)}")
+        yield event.plain_result(f"参数解析失败：{format_recipe_error(e, uses_locked_recipe=uses_locked_recipe)}")
         return
 
     i2i_image = resolved_images.i2i_image
@@ -314,6 +320,7 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
                             vibe_transfer_images=vibe_transfer_images,
                             vision_images=vision_images,
                             skip_default_prompts=bool(preset_contents),
+                            hide_reference_hints=uses_locked_recipe,
                         )
 
                         if user_req is not None:
@@ -360,7 +367,7 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
                 optional_content = await _build_optional_output_content(plugin, event, images)
                 merged_content = [Image.fromBytes(img) for img in images] + optional_content
                 report_content = None
-                if last_req is not None and (
+                if not uses_locked_recipe and last_req is not None and (
                     plugin.config.general.send_generation_details
                     or last_req.data is True
                 ):
@@ -400,7 +407,8 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
                         ])
                     ])
             except ReturnToLLMError as e:
-                yield event.plain_result(f"画图失败：{e}")
+                message = format_recipe_error(e, uses_locked_recipe=True) if uses_locked_recipe else str(e)
+                yield event.plain_result(f"画图失败：{message}")
             except asyncio.CancelledError:
                 await plugin._queue.mark_wait_finished(
                     max_concurrent=plugin.config.request.max_concurrent
@@ -408,7 +416,7 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
                 raise
             except Exception as e:  # noqa: BLE001
                 logger.exception("nai画图 failed")
-                yield event.plain_result(f"画图失败：{format_readable_error(e)}")
+                yield event.plain_result(f"画图失败：{format_recipe_error(e, uses_locked_recipe=uses_locked_recipe)}")
     except QueueRejected as e:
         if e.reason == "inflight":
             yield event.plain_result("你的上一张还没画完呢~")
@@ -462,7 +470,7 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
             yield event.plain_result(help_msg)
         return
 
-    req, batch_count, _, _, resource_keys = parsed
+    req, batch_count, _, _, resource_keys, uses_locked_recipe = parsed
     user_id = plugin._get_user_id(event)
 
     if quota_enabled and not is_whitelisted:
@@ -539,7 +547,7 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
                 optional_content = await _build_optional_output_content(plugin, event, images)
                 merged_content = [Image.fromBytes(img) for img in images] + optional_content
                 report_content = None
-                if plugin.config.general.send_generation_details or req.data is True:
+                if not uses_locked_recipe and (plugin.config.general.send_generation_details or req.data is True):
                     report_content = [
                         Plain(format_generation_report(
                             event.message_str.removeprefix("nai").strip(), req
@@ -580,7 +588,7 @@ async def handle_cmd_nai(plugin, event, waiting_replies: list[str]) -> AsyncIter
                     ])
             except GenerateError as e:
                 logger.error(f"Generation failed: {e}")
-                readable = format_readable_error(e)
+                readable = format_recipe_error(e, uses_locked_recipe=uses_locked_recipe)
                 extra = f" ({readable})" if readable else ""
                 yield event.plain_result(
                     f"呱！画图的时候好像出现了点问题 xwx{extra}"

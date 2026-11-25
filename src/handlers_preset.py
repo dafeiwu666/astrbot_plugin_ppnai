@@ -95,6 +95,9 @@ async def handle_preset_add(plugin, event) -> AsyncIterator:
     if not added:
         yield event.plain_result(f"预设 #{title} 已存在，如需修改请先nai预设修改")
         return
+    if recipe.locked:
+        yield event.plain_result(f"✅ 预设 #{title} 添加成功，内容已锁定。")
+        return
     preview = content[:200] + ("..." if len(content) > 200 else "")
     yield event.plain_result(f"✅ 预设 #{title} 添加成功！\n\n内容：\n{preview}")
 

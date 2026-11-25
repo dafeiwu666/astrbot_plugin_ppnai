@@ -232,6 +232,7 @@ async def llm_generate_advanced_req(
     vision_images: list[Any] | None = None,
     skip_default_prompts: bool = False,
     extra_system_prompt: str | None = None,
+    hide_reference_hints: bool = False,
 ) -> Req:
     """只调用“高级参数生成模型”，返回可用于绘图的 Req。
 
@@ -259,9 +260,9 @@ async def llm_generate_advanced_req(
         .replace("{portrait_size}", get_size_from_config(config, "portrait"))
         .replace("{landscape_size}", get_size_from_config(config, "landscape"))
         .replace("{square_size}", get_size_from_config(config, "square"))
-        .replace("{has_i2i_image}", "Yes" if i2i_image else "No")
+        .replace("{has_i2i_image}", "Yes" if i2i_image and not hide_reference_hints else "No")
         .replace("{vibe_transfer_image_count}", str(
-            len(vibe_transfer_images) if vibe_transfer_images else 0
+            len(vibe_transfer_images) if vibe_transfer_images and not hide_reference_hints else 0
         ))
     )
     if extra_system_prompt and extra_system_prompt.strip():
@@ -351,7 +352,9 @@ async def llm_generate_advanced_req(
                 skip_default_prompts=skip_default_prompts,
             )
         except ReturnToLLMError as e:
-            sys_m = f"Your response seems incorrect. Correct the error and try again.\n{e}"
+            sys_m = "Your response seems incorrect. Correct the error and try again."
+            if not hide_reference_hints:
+                sys_m = f"{sys_m}\n{e}"
             contexts.append(Message(role="assistant", content=llm_resp.completion_text))
             contexts.append(Message(role="user", content=sys_m))
             continue

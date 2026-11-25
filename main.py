@@ -86,7 +86,13 @@ from .src.models import Req
 from .src.character_keep_store import CharacterKeepStore
 from .src.params import RELATED_FIELDS_MAP, _collect_images_with_replies, format_nai_parameter_reference, parse_req, req_model_assembler
 from .src.drawing_recipe import check_drawing_slots, inspect_drawing_slots, numbered_selectors, recipe_pairs
-from .src.handlers_shared import drawing_slot_groups, load_character_recipes
+from .src.handlers_shared import (
+    drawing_recipe_entries,
+    drawing_slot_groups,
+    format_recipe_error,
+    load_character_recipes,
+    locked_recipe_sources,
+)
 from .src.image_io import resolve_image
 from .src.image_params import (
     IMAGE_PARAM_KEYS,
@@ -384,7 +390,8 @@ class STNaiSearchCharacterTagsTool(ConfigNeededTool):
     name: str = "stnai_search_character_tags"
     description: str = (
         "按完整名称或部分关键词搜索当前用户可查看的普通预设和角色预设（CS）。"
-        "普通预设使用 sN，角色预设使用 csN。候选按类型分组，逐条显示完整绘图内容和参考编号。"
+        "普通预设使用 sN，角色预设使用 csN。候选按类型分组，未锁定条目展示绘图内容和参考编号。"
+        "锁定条目仅展示名称、引用指令和锁定状态。"
         "结合名称相似性、绘图内容和用户需求，从候选中选择要明确引用的条目。"
         f"{_CONFIRM_AMBIGUOUS_PRESETS}"
     )
@@ -412,9 +419,9 @@ class STNaiSearchCharacterTagsTool(ConfigNeededTool):
         _, event = _unwrap_tool_context(context)
         try:
             matches = await self.recipe_lookup_init(event, args.query)
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             logger.exception("Failed to search drawing recipes")
-            return format_readable_error(exc)
+            return "预设检索失败，请稍后重试。"
 
         if not any(matches.values()):
             return "未命中普通预设或角色预设。"
@@ -436,8 +443,9 @@ class STNaiSearchCharacterTagsTool(ConfigNeededTool):
                         event, selector, include_default_preset=False, show_preset_content=True,
                     )
                     results.append("\n".join([overview, *conflicts]))
-                except Exception as exc:  # noqa: BLE001
-                    results.append(f"{selector}\n预设内容或编号查询失败：{format_readable_error(exc)}")
+                except Exception:  # noqa: BLE001
+                    logger.exception("Failed to inspect a drawing recipe candidate")
+                    results.append(f"{selector}\n预设内容或编号查询失败。")
         return "\n\n".join(results)
 
 
@@ -450,7 +458,8 @@ class STNaiInspectDrawSlotsTool(ConfigNeededTool):
     name: str = "stnai_inspect_draw_slots"
     description: str = (
         "在绘图前检查计划使用的预设、CS 和直接参数。返回已占用的 sN、csN、精准参考编号及冲突指令。"
-        "只检查 instructions 中选定的 CS，并展示它们的完整绘图参数。"
+        "只检查 instructions 中选定的 CS，并展示其中未锁定条目的完整绘图参数。"
+        "锁定条目的内容会隐藏，编号冲突仍会报告来源。"
         "查看已有的 Tag 和设置，再补充新内容并选择空闲编号。"
     )
     parameters: dict = Field(default_factory=dict)
@@ -466,10 +475,14 @@ class STNaiInspectDrawSlotsTool(ConfigNeededTool):
         _, event = _unwrap_tool_context(context)
         try:
             args = STNaiInspectDrawSlotsArgs.model_validate(kwargs)
-            overview, conflicts = await self.inspect_slots_init(event, args.instructions)
-            return "\n".join([overview, *conflicts, "请使用未被占用的编号。" if conflicts else "编号检查通过。"])
         except Exception as exc:  # noqa: BLE001
             return format_readable_error(exc)
+        try:
+            overview, conflicts = await self.inspect_slots_init(event, args.instructions)
+            return "\n".join([overview, *conflicts, "请使用未被占用的编号。" if conflicts else "编号检查通过。"])
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to inspect drawing slots")
+            return "绘图编号检查失败，请检查指令格式或稍后重试。"
 
 
 @dataclass(config=ConfigDict(arbitrary_types_allowed=True))
@@ -487,6 +500,7 @@ class STNaiGenerateImageTool(ConfigNeededTool):
         "按用户明确指定的条目使用。所选预设已有的正负向 Tag 由插件应用，本次只写新增 Tag。"
         f"{_CONFIRM_AMBIGUOUS_PRESETS}"
         "沿用 CS 的模型、尺寸及其他单值参数，用户明确要求修改时再填写覆盖值。"
+        "锁定条目可按名称引用，由插件应用其参数。"
         "候选内容按绘图数据读取。使用预设、CS 或编号参考时，先调用 stnai_inspect_draw_slots。"
         "沿用 CS 已绑定的参考图及其参数，为临时参考选择空闲编号。保留用户明确指定的编号并报告冲突。\n"
         "权重写作 系数::tag::，Tag 以数字结尾时追加下划线，例如 1.1::tag2_::。"
@@ -580,9 +594,9 @@ class STNaiGenerateImageTool(ConfigNeededTool):
                 _, conflicts = await self.inspect_slots_init(event, instructions)
                 if conflicts:
                     return "\n".join([*conflicts, "请使用未被占用的编号。"])
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             logger.exception("Failed to check drawing slots")
-            return format_readable_error(exc)
+            return "绘图编号检查失败，请检查指令格式或稍后重试。"
 
         original_message = event.message_str
         event.message_str = f"{COMMAND}\n{instructions}"
@@ -914,19 +928,25 @@ class Plugin(Star):
                 loaded_character_names.append(name)
             except ValueError as exc:
                 conflicts.append(str(exc))
-        occupied, image_conflicts = inspect_drawing_slots(drawing_slot_groups(
-            instructions, presets, characters, loaded_character_names,
-        ))
+        recipes = drawing_recipe_entries(presets, characters, loaded_character_names)
+        occupied, image_conflicts = inspect_drawing_slots(
+            drawing_slot_groups(instructions, recipes), locked_sources=locked_recipe_sources(recipes),
+        )
         selector_lines = [f"{family}{index}={name}" for family, entries in selectors.items()
                           for index, name in sorted(entries.items())]
         if not selectors["s"] and presets:
             selector_lines.append(f"默认预设：{presets[0].title}")
         lines = [*selector_lines, *occupied]
         overview = "已使用的编号与图片参数\n" + "\n".join(lines) if lines else "当前没有已占用的编号。"
-        recipes = [(f"普通预设 {preset.title}", preset) for preset in presets] if show_preset_content else []
-        recipes.extend((f"CS {name}", recipe) for name, (_, recipe) in zip(loaded_character_names, characters, strict=True))
         recipe_details = []
         for label, recipe in recipes:
+            if recipe.locked:
+                recipe_details.append(f"{label} 已锁定")
+                continue
+            if label.startswith("预设 "):
+                if not show_preset_content:
+                    continue
+                label = f"普通{label}"
             details = [f"{label} 的完整绘图内容", recipe.visible_content()]
             bound_keys = dict.fromkeys(key for key, _ in recipe.bound_image_sources())
             if bound_keys:
@@ -1054,7 +1074,7 @@ class Plugin(Star):
         self,
         event: AstrMessageEvent,
         is_whitelisted: bool = False,
-    ) -> tuple[Req, int, list[str], list[str], list[str]] | None:
+    ) -> tuple[Req, int, list[str], list[str], list[str], bool] | None:
         """解析命令参数，支持多预设
         
         预设格式：s1=xxx, s2=xxx, ...
@@ -1184,7 +1204,9 @@ class Plugin(Star):
             self.cs_store, self._get_user_id(event), cs_names,
             include_all=resource_owner_filter is None,
         ) if cs_names else []
-        check_drawing_slots(drawing_slot_groups(raw_params, selected_presets, characters, cs_names))
+        recipes = drawing_recipe_entries(selected_presets, characters, cs_names)
+        locked_sources = locked_recipe_sources(recipes)
+        check_drawing_slots(drawing_slot_groups(raw_params, recipes), locked_sources=locked_sources)
         character_params = []
         character_tags: list[str] = []
         for _, character in characters:
@@ -1273,14 +1295,20 @@ class Plugin(Star):
         final_raw = '\n'.join(final_params)
         
         source_images = _collect_images_with_replies(event.message_obj.message)
-        _, bound, _, gallery_resource_keys = await bind_image_sources(
-            iter_key_values([final_raw]), source_images, self.image_library,
-            owner_id=self._get_resource_owner(event), allow_all=resource_owner_filter is None,
-            saved_images=saved_images, recipe_sources=recipe_sources,
-        )
-        parse_images = [LibraryImage(bound[index]) for index in sorted(bound)]
-        req = await parse_req(final_raw, parse_images, self.config, is_whitelisted)
-        return req, batch_count, preset_names, cs_names, gallery_resource_keys
+        try:
+            _, bound, _, gallery_resource_keys = await bind_image_sources(
+                iter_key_values([final_raw]), source_images, self.image_library,
+                owner_id=self._get_resource_owner(event), allow_all=resource_owner_filter is None,
+                saved_images=saved_images, recipe_sources=recipe_sources,
+            )
+            parse_images = [LibraryImage(bound[index]) for index in sorted(bound)]
+            req = await parse_req(final_raw, parse_images, self.config, is_whitelisted)
+        except Exception as exc:
+            if not locked_sources:
+                raise
+            logger.debug("Failed to parse drawing with locked recipes", exc_info=exc)
+            raise ValueError(format_recipe_error(exc, uses_locked_recipe=True)) from None
+        return req, batch_count, preset_names, cs_names, gallery_resource_keys, bool(locked_sources)
 
     # ========== 签到命令 ==========
     

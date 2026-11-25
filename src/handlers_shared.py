@@ -11,10 +11,12 @@ import base64
 from typing import TYPE_CHECKING
 
 from astrbot.api.message_components import Image, Node, Nodes, Plain
+from pydantic import ValidationError
 
 from .drawing_recipe import check_drawing_slots
 from .image_library import LibraryImage
 from .image_params import character_keep_key, character_keep_param, is_character_keep_source
+from .llm_utils import format_readable_error
 from .models import Req
 from .params import parse_req, req_model_assembler
 
@@ -26,7 +28,10 @@ if TYPE_CHECKING:
 async def drawing_recipe_view(event, recipe: DrawingRecipe, title: str, preview_manager, resource_key: str):
     attachments = recipe.bound_image_sources()
     preview = await asyncio.to_thread(recipe.preview_bytes, preview_manager, resource_key)
-    sections = [[Plain(f"{title}\n\n{recipe.visible_content()}\n\n已保存参考图：{len(attachments)} 张")]]
+    content = recipe.visible_content()
+    if recipe.locked:
+        content = f"lock=true\n{content}"
+    sections = [[Plain(f"{title}\n\n{content}\n\n已保存参考图：{len(attachments)} 张")]]
     for index, (key, data_uri) in enumerate(attachments, 1):
         label = f"参考图 {index}（{key}）"
         try:
@@ -52,6 +57,8 @@ async def load_character_recipes(store, user_id: str, names: list[str], *, inclu
             resolved = await asyncio.to_thread(store.resolve_recipe, user_id, name, include_all=include_all)
         except FileNotFoundError:
             resolved = None
+        except ValidationError:
+            raise ValueError(f"角色预设 {name} 内容无法读取") from None
         if resolved is None:
             raise ValueError(f"角色预设 {name} 不存在，请先使用 /cs添加 创建")
         recipes.append(resolved)
@@ -71,19 +78,32 @@ def combine_drawing_recipes(
     recipe_sources: dict[str, str] = {}
     return (
         [recipe.runtime_content(recipe_sources) for recipe in recipes],
-        [recipe.visible_content() for recipe in recipes],
+        [recipe.visible_content() for recipe in recipes if not recipe.locked],
         {key: image for recipe in recipes for key, image in recipe.images.items()},
         character_tags,
         recipe_sources,
     )
 
 
-def drawing_slot_groups(direct: str, presets, characters, character_names: list[str]) -> list[tuple[str, str]]:
+def drawing_recipe_entries(presets, characters, character_names: list[str]) -> list[tuple[str, DrawingRecipe]]:
     return [
-        ("本次指令", direct),
-        *((f"预设 {preset.title}", preset.visible_content()) for preset in presets),
-        *((f"CS {name}", recipe.visible_content()) for name, (_, recipe) in zip(dict.fromkeys(character_names), characters)),
+        *((f"预设 {preset.title}", preset) for preset in presets),
+        *((f"CS {name}", recipe) for name, (_, recipe) in zip(dict.fromkeys(character_names), characters, strict=True)),
     ]
+
+
+def drawing_slot_groups(direct: str, entries: list[tuple[str, DrawingRecipe]]) -> list[tuple[str, str]]:
+    return [("本次指令", direct), *((label, recipe.visible_content()) for label, recipe in entries)]
+
+
+def locked_recipe_sources(entries: list[tuple[str, DrawingRecipe]]) -> frozenset[str]:
+    return frozenset(label for label, recipe in entries if recipe.locked)
+
+
+def format_recipe_error(exc: Exception, *, uses_locked_recipe: bool) -> str:
+    if uses_locked_recipe:
+        return "本次使用了锁定的预设或 CS，详细错误已隐藏。"
+    return format_readable_error(exc)
 
 
 def _falsy(value: str) -> bool:

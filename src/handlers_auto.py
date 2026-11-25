@@ -12,16 +12,18 @@ from .drawing_recipe import check_drawing_slots, recipe_reference_signature
 from .image_io import resolve_image
 from .image_library import LibraryImage
 from .llm import llm_generate_advanced_req
-from .llm_utils import format_readable_error
 from .generation_report import format_generation_report, get_input_image_bytes
 from .params import RELATED_FIELDS_MAP, _collect_images_with_replies
 from .image_params import character_keep_param, iter_key_values, resolve_image_params
 from .handlers_shared import (
     apply_explicit_overrides,
     combine_drawing_recipes,
+    drawing_recipe_entries,
     drawing_slot_groups,
     extract_batch_count,
+    format_recipe_error,
     load_character_recipes,
+    locked_recipe_sources,
     merge_nai_params,
     parse_llm_overrides,
 )
@@ -92,9 +94,12 @@ async def _enable_auto_draw(
         characters = await load_character_recipes(
             plugin.cs_store, user_id, cs_names, include_all=allow_all,
         ) if cs_names else []
-        check_drawing_slots(drawing_slot_groups(raw_input, presets, characters, cs_names))
+        entries = drawing_recipe_entries(presets, characters, cs_names)
+        locked_sources = locked_recipe_sources(entries)
+        check_drawing_slots(drawing_slot_groups(raw_input, entries), locked_sources=locked_sources)
     except ValueError as exc:
         return False, str(exc)
+    uses_locked_recipe = bool(locked_sources)
     preset_contents, _, saved_images, _, recipe_sources = combine_drawing_recipes(presets, characters)
 
     uploaded_images = _collect_images_with_replies(event.message_obj.message)
@@ -109,7 +114,7 @@ async def _enable_auto_draw(
             recipe_sources=recipe_sources,
         )
     except Exception as e:  # noqa: BLE001
-        return False, f"图片参数解析失败：{format_readable_error(e)}"
+        return False, f"图片参数解析失败：{format_recipe_error(e, uses_locked_recipe=uses_locked_recipe)}"
 
     direct_params, _, _ = merge_nai_params([], raw_input)
     reference_keys = {"model", "i2i", *RELATED_FIELDS_MAP["character_keep"], *RELATED_FIELDS_MAP["i2i"]}
@@ -127,7 +132,7 @@ async def _enable_auto_draw(
                 resolved_images.vibe_transfer_images, resolved_images.vibe_transfer_settings,
             )
         except Exception as e:  # noqa: BLE001
-            return False, f"参数解析失败：{format_readable_error(e)}"
+            return False, f"参数解析失败：{format_recipe_error(e, uses_locked_recipe=uses_locked_recipe)}"
     else:
         character_keep_overrides = ""
 
@@ -319,9 +324,12 @@ async def handle_llm_response_auto_draw(plugin, event, resp: LLMResponse):
             plugin.cs_store, opener_user_id, cs_names,
             include_all=auto_info.get("allow_all_resources", plugin.config.general.list_all_resources),
         ) if cs_names else []
-        check_drawing_slots(drawing_slot_groups(
-            auto_info.get("character_keep_overrides", ""), loaded_presets, characters, cs_names,
-        ))
+        entries = drawing_recipe_entries(loaded_presets, characters, cs_names)
+        locked_sources = locked_recipe_sources(entries)
+        check_drawing_slots(
+            drawing_slot_groups(auto_info.get("character_keep_overrides", ""), entries),
+            locked_sources=locked_sources,
+        )
         current_signature = recipe_reference_signature([*loaded_presets, *(recipe for _, recipe in characters)])
         if auto_info.get("recipe_reference_signature") not in {None, current_signature}:
             raise ValueError("预设或 CS 的参考图参数已修改，请重新开启自动画图")
@@ -345,6 +353,7 @@ async def handle_llm_response_auto_draw(plugin, event, resp: LLMResponse):
         opener_user_id,
         is_whitelisted,
         auto_info,
+        uses_locked_recipe=bool(locked_sources),
     )
     if hasattr(plugin, "_create_background_task"):
         plugin._create_background_task(coro, name="nai:auto_draw")
@@ -368,6 +377,8 @@ async def _auto_draw_generate(
     opener_user_id: str,
     is_whitelisted: bool,
     auto_info: dict,
+    *,
+    uses_locked_recipe: bool = False,
 ):
     quota_enabled = plugin.config.quota.enable_quota
     umo = event.unified_msg_origin
@@ -379,7 +390,7 @@ async def _auto_draw_generate(
         )
     except Exception as e:  # noqa: BLE001
         await event.send(
-            event.plain_result(f"🎨 自动画图失败：{format_readable_error(e)}")
+            event.plain_result(f"🎨 自动画图失败：{format_recipe_error(e, uses_locked_recipe=uses_locked_recipe)}")
         )
         return
 
@@ -448,6 +459,7 @@ async def _auto_draw_generate(
                             vibe_transfer_images=vibe_transfer_images,
                             vision_images=vision_images,
                             skip_default_prompts=bool(preset_contents),
+                            hide_reference_hints=uses_locked_recipe,
                         )
 
                         if user_req is not None:
@@ -494,7 +506,7 @@ async def _auto_draw_generate(
                 optional_content = await _build_optional_output_content(plugin, event, images)
                 merged_content = [Image.fromBytes(img) for img in images] + optional_content
                 report_content = None
-                if last_req is not None and (
+                if not uses_locked_recipe and last_req is not None and (
                     plugin.config.general.send_generation_details
                     or last_req.data is True
                 ):
@@ -545,7 +557,7 @@ async def _auto_draw_generate(
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"Auto draw generation failed: {e}")
                 await event.send(
-                    event.plain_result(f"🎨 自动画图失败：{format_readable_error(e)}")
+                    event.plain_result(f"🎨 自动画图失败：{format_recipe_error(e, uses_locked_recipe=uses_locked_recipe)}")
                 )
     except QueueRejected as e:
         close_auto = False
