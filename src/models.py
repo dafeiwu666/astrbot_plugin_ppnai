@@ -38,6 +38,8 @@ AVAILABLE_NOISE_SCHEDULERS = [
     "polyexponential",
 ]
 AVAILABLE_DOTH = ["0", "1", "2", "3", "4", "5"]
+V5_CHARACTER_KEEP_MAX_STRENGTH = 5
+CharacterKeepMode: TypeAlias = Literal["character", "character&style", "style", "outfit"]
 AVAILABLE_POSITIONS = [
     "A1", "B1", "C1", "D1", "E1",
     "A2", "B2", "C2", "D2", "E2",
@@ -146,8 +148,13 @@ class ReqAdditionMultiRole(BaseModel):  # 多角色控制
 @model_with_model_config(REQ_MODEL_CONFIG)
 class ReqAdditionCharacterKeep(BaseModel):  # 角色保持
     base64: str | None = None  # 参考图片 (data uri)
-    keep_vibe: bool = False  # 保持氛围
-    strength: Annotated[float, Field(ge=0, le=1)] = 0.5  # 参考强度
+    keep_vibe: bool = False  # 兼容旧请求中的字段
+    strength: Annotated[float, Field(ge=0, le=V5_CHARACTER_KEEP_MAX_STRENGTH)] = 0.5
+    mode: CharacterKeepMode | None = None
+
+    @property
+    def effective_mode(self) -> CharacterKeepMode:
+        return self.mode or "character&style"
 
 
 @model_with_model_config(REQ_MODEL_CONFIG)
@@ -203,6 +210,21 @@ class Req(BaseModel):
     ch: bool = False
     nocache: int = 1
     stream: int = 1
+
+    def validate_character_keep(self) -> None:
+        reference = self.addition.character_keep
+        if not reference or not reference.base64:
+            return
+        if self.model.startswith("nai-diffusion-5-"):
+            max_strength = V5_CHARACTER_KEEP_MAX_STRENGTH
+        elif self.model.startswith("nai-diffusion-4-5-"):
+            if reference.effective_mode == "outfit":
+                raise ValueError("服装参考需要使用 NAI5 完整版或精选版")
+            max_strength = 1
+        else:
+            raise ValueError("角色参考需要使用 NAI4.5 或 NAI5 模型")
+        if not 0 <= reference.strength <= max_strength:
+            raise ValueError(f"模型 {self.model} 的角色参考强度须在 0–{max_strength} 之间")
 
 
 class Resp(BaseModel):

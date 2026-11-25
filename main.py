@@ -83,7 +83,7 @@ from .src.llm import (
 from .src.llm_utils import format_readable_error
 from .src.models import Req
 from .src.character_keep_store import CharacterKeepStore
-from .src.params import _collect_images_with_replies, parse_req
+from .src.params import CHARACTER_KEEP_MODE_ALIASES, _collect_images_with_replies, parse_req
 from .src.image_io import resolve_image
 from .src.user_manager import UserManager
 from .src.preset_manager import PresetManager
@@ -1034,6 +1034,8 @@ class Plugin(Star):
         
         for params in all_params_groups:
             for key, value in params:
+                if key in CHARACTER_KEEP_MODE_ALIASES:
+                    key = "character_keep_mode"
                 if key == 'tag':
                     tag_parts.append(value)
                 elif key in ('negative', '反向提示词'):

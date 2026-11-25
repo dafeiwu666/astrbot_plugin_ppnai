@@ -1,10 +1,10 @@
 """Image/base64 helpers for request assembly."""
 
-import asyncio
 import base64
 import io
+import math
 
-from PIL import Image as PILImage
+from PIL import Image as PILImage, ImageOps
 
 from astrbot.api import logger
 from astrbot.api.message_components import Image
@@ -34,6 +34,52 @@ CHARACTER_KEEP_TARGET_SIZES: list[tuple[int, int]] = [
     (1024, 1536),
 ]
 
+# V5 uses roughly one-megapixel buckets in 64 px increments. Each row gives
+# the short side and the inclusive range of long sides for portrait buckets.
+_V5_REFERENCE_PORTRAIT_BUCKETS = tuple(
+    (width, height)
+    for width, min_height, max_height in (
+        (256, 3328, 4096),
+        (320, 2752, 3264),
+        (384, 2368, 2688),
+        (448, 2112, 2304),
+        (512, 1856, 2048),
+        (576, 1664, 1792),
+        (640, 1536, 1600),
+        (704, 1408, 1472),
+        (768, 1280, 1344),
+        (832, 1216, 1216),
+        (896, 1152, 1152),
+        (960, 1088, 1088),
+    )
+    for height in range(max_height, min_height - 1, -64)
+)
+_V5_REFERENCE_BUCKETS = (
+    *_V5_REFERENCE_PORTRAIT_BUCKETS,
+    (1024, 1024),
+    *((height, width) for width, height in reversed(_V5_REFERENCE_PORTRAIT_BUCKETS)),
+)
+
+
+def prepare_v5_character_keep_image(encoded: str) -> str:
+    """Fit a reference to the closest V5 aspect-ratio bucket and preserve alpha."""
+    with PILImage.open(io.BytesIO(base64.b64decode(encoded))) as image:
+        ratio = math.log(image.width / image.height)
+        target_size = min(
+            _V5_REFERENCE_BUCKETS,
+            key=lambda size: abs(ratio - math.log(size[0] / size[1])),
+        )
+        if image.size == target_size and image.format in {"JPEG", "PNG"}:
+            image.load()
+            return encoded
+
+        fitted = ImageOps.fit(
+            image.convert("RGBA"), target_size, PILImage.Resampling.LANCZOS
+        )
+        buffer = io.BytesIO()
+        fitted.save(buffer, format="PNG")
+        return base64.b64encode(buffer.getvalue()).decode("ascii")
+
 
 def _select_best_target_size(width: int, height: int) -> tuple[int, int]:
     """Pick target size with closest aspect ratio to source."""
@@ -52,8 +98,7 @@ def _select_best_target_size(width: int, height: int) -> tuple[int, int]:
 def convert_to_jpeg_for_character_keep(image_b64: str) -> str:
     """Resize/pad image to allowed sizes and return JPEG data URI.
 
-    This function is CPU-bound (PIL decode/resize/encode) and should NOT be called
-    directly from the event loop. Prefer `aconvert_to_jpeg_for_character_keep()`.
+    This CPU-bound function runs in the request assembly thread.
     """
     # Parse input data URI or raw base64
     if image_b64.startswith("data:"):
@@ -67,6 +112,10 @@ def convert_to_jpeg_for_character_keep(image_b64: str) -> str:
     pil_image = PILImage.open(io.BytesIO(image_bytes))
     original_width, original_height = pil_image.size
     original_mode = pil_image.mode
+
+    if pil_image.format == "JPEG" and pil_image.size in CHARACTER_KEEP_TARGET_SIZES:
+        pil_image.load()
+        return f"data:image/jpeg;base64,{b64_data}"
 
     logger.debug(
         f"[nai] 角色保持图片处理: MIME={original_mime}, "
@@ -91,8 +140,8 @@ def convert_to_jpeg_for_character_keep(image_b64: str) -> str:
         logger.debug(f"[nai] 已将 {original_mode} 模式转换为 RGB")
 
     scale = min(target_width / original_width, target_height / original_height)
-    new_width = int(original_width * scale)
-    new_height = int(original_height * scale)
+    new_width = max(1, int(original_width * scale))
+    new_height = max(1, int(original_height * scale))
     pil_image = pil_image.resize((new_width, new_height), PILImage.Resampling.LANCZOS)
     logger.debug(f"[nai] 缩放后尺寸: {new_width}x{new_height}")
 
@@ -117,21 +166,3 @@ def convert_to_jpeg_for_character_keep(image_b64: str) -> str:
         f"输出大小={len(result)} chars"
     )
     return result
-
-
-async def aconvert_to_jpeg_for_character_keep(image_b64: str) -> str:
-    """Async wrapper for `convert_to_jpeg_for_character_keep` (runs in a thread)."""
-    return await asyncio.to_thread(convert_to_jpeg_for_character_keep, image_b64)
-
-
-async def resolve_image_as_jpeg(image: Image) -> str:
-    """Fetch image, resize/pad, and convert to JPEG for character-keep."""
-    b64 = await image.convert_to_base64()
-    if isinstance(b64, str) and b64.startswith("base64://"):
-        b64 = b64.removeprefix("base64://")
-    original_mime = get_base64_mime(b64, "image/jpeg")
-    original_data_uri = f"data:{original_mime};base64,{b64}"
-    logger.debug(
-        f"[nai] 角色保持: 接收到图片, 原始MIME={original_mime}, 原始大小={len(b64)} chars"
-    )
-    return await aconvert_to_jpeg_for_character_keep(original_data_uri)

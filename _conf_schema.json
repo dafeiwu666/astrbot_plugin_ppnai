@@ -330,6 +330,7 @@
           "role",
           "character_keep",
           "character_keep_vibe",
+          "character_keep_mode",
           "character_keep_strength"
         ],
         "title": "Whitelist Only Fields",
@@ -431,7 +432,6 @@
       "i2i_cl": 1,
       "vibe_transfer_info_extract": 1.0,
       "vibe_transfer_ref_strength": 0.5,
-      "character_keep_vibe": false,
       "character_keep_strength": 0.5
     },
     "description": "默认值设置",
@@ -592,17 +592,11 @@
         "title": "Vibe Transfer Ref Strength",
         "type": "float"
       },
-      "character_keep_vibe": {
-        "default": false,
-        "description": "默认角色保持氛围",
-        "title": "Character Keep Vibe",
-        "type": "bool"
-      },
       "character_keep_strength": {
         "default": 0.5,
         "description": "默认角色保持参考强度",
-        "hint": "值需在 0 到 1 之间",
-        "maximum": 1.0,
+        "hint": "NAI4.5 支持 0–1，NAI5 支持 0–5",
+        "maximum": 5.0,
         "minimum": 0.0,
         "title": "Character Keep Strength",
         "type": "float"

@@ -23,6 +23,7 @@ class AutoDrawSession(BaseModel):
     i2i_image: str | None = None
     vibe_transfer_images: list[str] = Field(default_factory=list)
     character_keep_image: str | None = None
+    character_keep_overrides: str = ""
     vision_images: list[str] = Field(default_factory=list)
 
 

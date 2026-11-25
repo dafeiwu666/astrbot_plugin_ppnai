@@ -12,13 +12,13 @@ from .image_io import resolve_image
 from .llm import llm_generate_advanced_req
 from .llm_utils import format_readable_error
 from .generation_report import format_generation_report, get_input_image_bytes
-from .models import ReqAdditionCharacterKeep
-from .params import _collect_images_with_replies, parse_req_with_remaining_images
+from .params import RELATED_FIELDS_MAP, _collect_images_with_replies
 from .image_params import iter_key_values, resolve_image_params
 from .handlers_shared import (
     apply_explicit_overrides,
     extract_batch_count,
     merge_nai_params,
+    parse_llm_overrides,
 )
 from .queue_flow import QueueRejected, acquire_generation_semaphore, reserve_queue
 from .handlers_nai import (
@@ -34,28 +34,6 @@ async def handle_auto_draw_off(plugin, event) -> AsyncIterator:
     if hasattr(plugin, "persist_auto_draw_info"):
         await plugin.persist_auto_draw_info()
     yield event.plain_result("❌ 自动画图已关闭")
-
-
-def _strip_image_param_lines(raw_params: str) -> str:
-    blocked_keys = {
-        "i2i",
-        "vibe_transfer",
-        "character_keep",
-        "vibe_transfer_info_extract",
-        "vibe_transfer_ref_strength",
-        "character_keep_vibe",
-        "character_keep_strength",
-    }
-    kept_lines: list[str] = []
-    for raw_line in raw_params.splitlines():
-        line = raw_line.strip()
-        if not line or "=" not in line:
-            continue
-        key, _value = line.split("=", 1)
-        if key.strip() in blocked_keys:
-            continue
-        kept_lines.append(line)
-    return "\n".join(kept_lines)
 
 
 async def _enable_auto_draw(
@@ -128,6 +106,25 @@ async def _enable_auto_draw(
     except Exception as e:  # noqa: BLE001
         return False, f"图片参数解析失败：{format_readable_error(e)}"
 
+    direct_params, _, _ = merge_nai_params([], raw_input)
+    reference_keys = {"model", *RELATED_FIELDS_MAP["character_keep"]}
+    character_keep_overrides = "\n".join(
+        f"{key}={value}"
+        for key, value in iter_key_values([direct_params])
+        if key in reference_keys
+    )
+    merged_raw, _, explicit_ids = merge_nai_params(preset_contents, character_keep_overrides)
+    if resolved_images.character_keep_image or "character_keep_mode" in explicit_ids:
+        is_whitelisted = await asyncio.to_thread(plugin.user_manager.is_whitelisted, user_id)
+        try:
+            await parse_llm_overrides(
+                merged_raw, plugin.config, is_whitelisted, resolved_images.character_keep_image
+            )
+        except Exception as e:  # noqa: BLE001
+            return False, f"参数解析失败：{format_readable_error(e)}"
+    else:
+        character_keep_overrides = ""
+
     vision_images = [
         await resolve_image(img) if isinstance(img, Image) else img
         for img in resolved_images.vision_images
@@ -144,6 +141,7 @@ async def _enable_auto_draw(
         "i2i_image": resolved_images.i2i_image,
         "vibe_transfer_images": resolved_images.vibe_transfer_images,
         "character_keep_image": resolved_images.character_keep_image,
+        "character_keep_overrides": character_keep_overrides,
         "vision_images": vision_images,
         "resource_keys": resolved_images.resource_keys,
     }
@@ -394,21 +392,15 @@ async def _auto_draw_generate(
 
             try:
                 ai_response_with_prefix = f"参考：{ai_response}"
-                merged_raw, wrappers, explicit_ids = merge_nai_params(preset_contents)
-                filtered_raw = _strip_image_param_lines(merged_raw)
-                if filtered_raw.strip():
-                    user_req, _remaining_images = await parse_req_with_remaining_images(
-                        filtered_raw,
-                        [],
-                        plugin.config,
-                        is_whitelisted=is_whitelisted,
-                    )
-                else:
-                    user_req = None
+                merged_raw, wrappers, explicit_ids = merge_nai_params(
+                    preset_contents, auto_info.get("character_keep_overrides", "")
+                )
+                user_req = await parse_llm_overrides(
+                    merged_raw, plugin.config, is_whitelisted, auto_info.get("character_keep_image")
+                )
 
                 i2i_image = auto_info.get("i2i_image")
                 vibe_transfer_images = auto_info.get("vibe_transfer_images")
-                character_keep_image = auto_info.get("character_keep_image")
                 vision_images = auto_info.get("vision_images")
 
                 cs_tag_parts: list[str] = []
@@ -460,13 +452,6 @@ async def _auto_draw_generate(
                             vision_images=vision_images,
                             skip_default_prompts=bool(preset_contents),
                         )
-
-                        if character_keep_image and req.addition is not None:
-                            req.addition.character_keep = ReqAdditionCharacterKeep(
-                                base64=character_keep_image,
-                                keep_vibe=plugin.config.defaults.character_keep_vibe,
-                                strength=plugin.config.defaults.character_keep_strength,
-                            )
 
                         if user_req is not None:
                             apply_explicit_overrides(req, user_req, explicit_ids, wrappers)

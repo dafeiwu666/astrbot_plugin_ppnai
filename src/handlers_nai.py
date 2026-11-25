@@ -18,11 +18,12 @@ from .image_params import iter_key_values, resolve_image_params
 from .llm import ReturnToLLMError, llm_generate_advanced_req
 from .llm_utils import format_readable_error
 from .generation_report import format_generation_report, get_input_image_bytes
-from .params import _collect_images_with_replies, parse_req
+from .params import _collect_images_with_replies
 from .handlers_shared import (
     apply_explicit_overrides,
     extract_batch_count,
     merge_nai_params,
+    parse_llm_overrides,
 )
 from .queue_flow import QueueRejected, acquire_generation_semaphore, reserve_queue
 from .curtain import compose_curtain
@@ -117,32 +118,6 @@ async def _build_optional_output_content(
         if result is not None:
             content.append(Plain("夸克分享链接：\n" + "\n".join(urls)))
     return content
-
-
-def _strip_image_param_lines(raw_params: str) -> str:
-    blocked_keys = {
-        "i2i",
-        "vibe_transfer",
-        "character_keep",
-        "vibe_transfer_info_extract",
-        "vibe_transfer_ref_strength",
-        "character_keep_vibe",
-        "character_keep_strength",
-        "QR",
-        "QK",
-        "qr",
-        "qk",
-    }
-    kept_lines: list[str] = []
-    for raw_line in raw_params.splitlines():
-        line = raw_line.strip()
-        if not line or "=" not in line:
-            continue
-        key, _value = line.split("=", 1)
-        if key.strip() in blocked_keys:
-            continue
-        kept_lines.append(line)
-    return "\n".join(kept_lines)
 
 
 async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIterator:
@@ -258,17 +233,10 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
         return
 
     merged_raw, wrappers, explicit_ids = merge_nai_params(preset_contents, raw_input)
-    filtered_raw = _strip_image_param_lines(merged_raw)
     try:
-        if filtered_raw.strip():
-            user_req = await parse_req(
-                filtered_raw,
-                [],
-                plugin.config,
-                is_whitelisted=is_whitelisted,
-            )
-        else:
-            user_req = None
+        user_req = await parse_llm_overrides(
+            merged_raw, plugin.config, is_whitelisted, resolved_images.character_keep_image
+        )
     except Exception as e:  # noqa: BLE001
         yield event.plain_result(f"参数解析失败：{format_readable_error(e)}")
         return
@@ -347,7 +315,6 @@ async def handle_nai_draw(plugin, event, waiting_replies: list[str]) -> AsyncIte
                             event=event,
                             i2i_image=i2i_image,
                             vibe_transfer_images=vibe_transfer_images,
-                            character_keep_image=character_keep_image,
                             vision_images=vision_images,
                             skip_default_prompts=bool(preset_contents),
                         )

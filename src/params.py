@@ -6,6 +6,7 @@ from typing import (
     Generic,
     Protocol,
     TypeVar,
+    get_args,
 )
 from typing_extensions import TypedDict, Unpack
 
@@ -53,12 +54,11 @@ from .models import (
     AVAILABLE_NOISE_SCHEDULERS,
     AVAILABLE_POSITIONS,
     AVAILABLE_SAMPLERS,
+    CharacterKeepMode,
     Req,
+    V5_CHARACTER_KEEP_MAX_STRENGTH,
 )
-from .image_io import (
-    resolve_image,
-    resolve_image_as_jpeg,
-)
+from .image_io import resolve_image
 
 if TYPE_CHECKING:
     from .config import Config
@@ -266,11 +266,18 @@ req_model_assembler = ParamAssembler[Req, "Config"]()
 PORTRAIT_KEYWORDS = ["portrait", "竖图"]
 LANDSCAPE_KEYWORDS = ["landscape", "横图"]
 SQUARE_KEYWORDS = ["square", "方图"]
+CHARACTER_KEEP_MODE_ALIASES = ["角色参考模式", "ck_mode", "c_k_m"]
+CHARACTER_KEEP_MODE_SHORTCUTS: dict[str, CharacterKeepMode] = {
+    "ctst": "character&style",
+    "ct": "character",
+    "st": "style",
+    "oft": "outfit",
+}
 IMG_FIELDS = ["i2i", "vibe_transfer", "character_keep"]
 RELATED_FIELDS_MAP = {
     "i2i": ["i2i_force", "i2i_cl"],
     "vibe_transfer": ["vibe_transfer_info_extract", "vibe_transfer_ref_strength"],
-    "character_keep": ["character_keep_vibe", "character_keep_strength"],
+    "character_keep": ["character_keep_vibe", "character_keep_mode", "character_keep_strength"],
 }
 AVAILABLE_MODEL_NAME_MAP = {
     "nai-diffusion-3": "NAI3 标准模型",
@@ -745,30 +752,21 @@ async def apply_role(value: str, data: dict[str, Any], ctx: "Config", **_):
     "character_keep",
     ["角色保持", "ck", "c_k"],
     lambda _: (
-        "角色保持功能，上传一张角色图片，生成的图片会保持该角色的特征\n"
-        "\n建议格式：`角色保持=true`\n"
+        "NAI4.5 / NAI5 精准参考功能，使用一张参考图引导出图\n"
+        "\n用 `c_k=true` 并附图，或写 `c_k=图库名称`\n"
         "\n仅限引用一张图片\n"
         "\n相关参数：\n"
-        "- `character_keep_vibe`：是否同时保持氛围（true/false，默认false）\n"
-        "- `character_keep_strength`：参考强度（0-1，默认0.5）"
+        "- `c_k_m` 可填 `ct`、`ctst`、`st`、`oft`，默认 `ctst`（角色和画风）\n"
+        "- `c_k_s` 参考强度，省略时读取插件默认值设置"
     ),
 )
 async def apply_character_keep(value: str, data: dict[str, Any], images: list[Image], **_):
     if value.lower() in ("false", "0", "off", "关"):
         return
-    if "addition" not in data:
-        data["addition"] = {}
-    if data["addition"].get("character_keep", {}).get("base64"):
+    reference = data.setdefault("addition", {}).setdefault("character_keep", {})
+    if reference.get("base64"):
         raise ValueError("Param `character_keep` already set")
-    
-    # 角色保持（Director Reference）要求指定尺寸的 JPEG 格式。
-    image = pop_from_images(images)
-    image_b64 = await resolve_image_as_jpeg(image)
-    
-    # 初始化或更新 character_keep
-    if "character_keep" not in data["addition"]:
-        data["addition"]["character_keep"] = {}
-    data["addition"]["character_keep"]["base64"] = image_b64
+    reference["base64"] = await resolve_first_image(images)
 
 
 @req_model_assembler.applier(
@@ -776,15 +774,10 @@ async def apply_character_keep(value: str, data: dict[str, Any], images: list[Im
     ["角色保持氛围", "ck_vibe", "c_k_v"],
     lambda _: (
         "> 角色保持的附加参数\n"
-        "\n是否同时保持氛围，可选值：`true` / `false`，默认为 `false`"
+        "\n兼容旧指令。角色和画风请使用 `c_k_m=ctst`。"
     ),
 )
 async def apply_character_keep_vibe(value: str, data: dict[str, Any], **_):
-    if ("addition" not in data) or (
-        not data["addition"].get("character_keep", {}).get("base64")
-    ):
-        raise ValueError("请先使用 character_keep 参数引用图片")
-    
     # 解析布尔值
     value_lower = value.lower().strip()
     if value_lower in ("true", "1", "yes", "是"):
@@ -796,7 +789,38 @@ async def apply_character_keep_vibe(value: str, data: dict[str, Any], **_):
             f"无效的值 `{value}`，请使用 true 或 false"
         )
     
-    data["addition"]["character_keep"]["keep_vibe"] = keep_vibe
+    reference = data.setdefault("addition", {}).setdefault("character_keep", {})
+    reference["keep_vibe"] = keep_vibe
+
+
+@req_model_assembler.applier(
+    "character_keep_mode",
+    CHARACTER_KEEP_MODE_ALIASES,
+    lambda _: (
+        "精准参考模式，需通过 `c_k` 提供图片\n"
+        "\n`ct` / `character` 参考角色，`ctst` / `character&style` 参考角色和画风，"
+        "`st` / `style` 参考画风，`oft` / `outfit` 参考服装（NAI5）\n"
+        "\n省略时默认 `character&style`"
+    ),
+)
+async def apply_character_keep_mode(value: str, data: dict[str, Any], ctx: "Config", **_):
+    if (
+        not data.get("_is_whitelisted")
+        and "character_keep_mode" in ctx.permission.whitelist_only_fields
+    ):
+        raise ValueError("参数 `character_keep_mode` 仅限白名单用户使用")
+
+    normalized = value.lower().replace(" ", "")
+    mode = CHARACTER_KEEP_MODE_SHORTCUTS.get(normalized, normalized)
+    modes = get_args(CharacterKeepMode)
+    if mode not in modes:
+        options = ", ".join(
+            f"{short} / {full}" for short, full in CHARACTER_KEEP_MODE_SHORTCUTS.items()
+        )
+        raise ValueError(f"无效的参考模式 `{value}`，可选值为 {options}")
+
+    reference = data.setdefault("addition", {}).setdefault("character_keep", {})
+    reference["mode"] = mode
 
 
 @req_model_assembler.applier(
@@ -804,25 +828,21 @@ async def apply_character_keep_vibe(value: str, data: dict[str, Any], **_):
     ["角色保持强度", "ck_strength", "c_k_s"],
     lambda _: (
         "> 角色保持的附加参数\n"
-        "\n参考强度，范围 0-1，默认为 `0.5`\n"
+        "\n参考强度，NAI4.5 为 0–1，NAI5 为 0–5，省略时读取插件默认值设置\n"
         "\n值越大，生成的角色越接近参考图片"
     ),
 )
 async def apply_character_keep_strength(value: str, data: dict[str, Any], **_):
-    if ("addition" not in data) or (
-        not data["addition"].get("character_keep", {}).get("base64")
-    ):
-        raise ValueError("请先使用 character_keep 参数引用图片")
-    
     try:
         strength = float(value)
-    except ValueError:
-        raise ValueError(f"无效的值 `{value}`，请输入 0-1 之间的数字")
+    except ValueError as exc:
+        raise ValueError(f"无效的角色参考强度 `{value}`，请输入数字") from exc
     
-    if not (0 <= strength <= 1):
-        raise ValueError(f"参考强度 `{strength}` 超出范围，请输入 0-1 之间的数字")
+    if not 0 <= strength <= V5_CHARACTER_KEEP_MAX_STRENGTH:
+        raise ValueError("角色参考强度须在 0–5 之间，NAI4.5 的上限为 1")
     
-    data["addition"]["character_keep"]["strength"] = strength
+    reference = data.setdefault("addition", {}).setdefault("character_keep", {})
+    reference["strength"] = strength
 
 def complete_defaults(data: dict[str, Any], ctx: "Config"):
     # token 由调用方在 wrapped_generate 时动态设置，不在这里设置
@@ -848,15 +868,16 @@ def complete_defaults(data: dict[str, Any], ctx: "Config"):
     # 填充 character_keep 默认值
     if "addition" in data and "character_keep" in data["addition"]:
         ck = data["addition"]["character_keep"]
-        if ck.get("base64"):  # 只有当设置了图片时才填充默认值
-            if "keep_vibe" not in ck:
-                ck["keep_vibe"] = ctx.defaults.character_keep_vibe
-            if "strength" not in ck:
-                ck["strength"] = ctx.defaults.character_keep_strength
+        if ck.get("base64"):
+            ck.setdefault("strength", ctx.defaults.character_keep_strength)
 
 
 @req_model_assembler.end_process_hook
 async def end_process(data: dict[str, Any], ctx: "Config", **_):
+    reference = data.get("addition", {}).get("character_keep")
+    if reference and not reference.get("base64"):
+        raise ValueError("请使用 character_keep 参数引用图片")
+
     # 获取前置/后置提示词（这些是临时存储在 data 中的）
     prepend_tag = data.pop("prepend_tag", "").strip()
     append_tag = data.pop("append_tag", "").strip()
@@ -943,6 +964,8 @@ def post_check_limits(model: Req, ctx: "Config", is_whitelisted: bool = False):
         raise ValueError(
             f"步数超出限制 {ctx.permission.steps_limit}"
         )
+
+    model.validate_character_keep()
 
 
 USER_DEFINABLE_FIELDS = list(req_model_assembler.appliers.keys())

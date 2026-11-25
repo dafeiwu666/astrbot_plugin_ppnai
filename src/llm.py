@@ -136,11 +136,7 @@ async def llm_generate_prepare_req(
                         vt[i]["ref_strength"] = vt_args.reference_strength
 
         if character_keep_image:
-            data_addition["character_keep"] = {
-                "base64": character_keep_image,
-                "keep_vibe": config.defaults.character_keep_vibe,
-                "strength": config.defaults.character_keep_strength,
-            }
+            data_addition["character_keep"] = {"base64": character_keep_image}
 
         if args.multi_role_list:
             data_addition["multi_role_list"] = [

@@ -8,6 +8,7 @@ from .models import (
     AVAILABLE_MODELS,
     AVAILABLE_NOISE_SCHEDULERS,
     AVAILABLE_SAMPLERS,
+    V5_CHARACTER_KEEP_MAX_STRENGTH,
     make_inner_item_exists_validator,
     make_item_exists_validator,
     size_validator,
@@ -528,17 +529,13 @@ class DefaultsConfig(BaseModel):
             json_schema_extra={"hint": "值需在 0 到 1 之间"},
         ),
     ] = 0.5
-    character_keep_vibe: Annotated[
-        bool,
-        Field(description="默认角色保持氛围"),
-    ] = False
     character_keep_strength: Annotated[
         float,
         Field(
             description="默认角色保持参考强度",
             ge=0,
-            le=1,
-            json_schema_extra={"hint": "值需在 0 到 1 之间"},
+            le=V5_CHARACTER_KEEP_MAX_STRENGTH,
+            json_schema_extra={"hint": "NAI4.5 支持 0–1，NAI5 支持 0–5"},
         ),
     ] = 0.5
 

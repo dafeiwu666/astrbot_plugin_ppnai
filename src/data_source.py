@@ -17,12 +17,14 @@ from pathlib import Path
 from typing import Any
 
 from httpx import AsyncClient, Timeout
+from PIL.Image import DecompressionBombError
 
 from astrbot.api import logger
 
 from .config import Config
-from .models import Req
 from .image_history_cache import ImageHistoryCache
+from .image_io import convert_to_jpeg_for_character_keep, prepare_v5_character_keep_image
+from .models import Req
 
 from .text_sanitize import shorten_base64_segments
 
@@ -400,41 +402,48 @@ def _convert_req_to_official_format(req: Req, opus_free_mode: bool = False) -> d
             parameters["reference_information_extracted_multiple"] = vibe_info_extracts
             parameters["reference_strength_multiple"] = vibe_strengths
     
-    # 处理角色保持 (character reference / director tools)
-    # 注意：官方 API 使用不同的参数名
-    if req.addition.character_keep and req.addition.character_keep.base64:
-        ck = req.addition.character_keep
-        # 官方 API 使用 director_reference_* 参数
-        parameters["director_reference_images"] = [_extract_base64_data(ck.base64)]
-        parameters["director_reference_strength_values"] = [float(ck.strength)]
+    if (reference := req.addition.character_keep) and reference.base64:
+        try:
+            req.validate_character_keep()
+        except ValueError as exc:
+            raise GenerateError(str(exc), status_code=400) from exc
+
+        is_v5 = req.model.startswith("nai-diffusion-5-")
+        try:
+            if is_v5:
+                image = prepare_v5_character_keep_image(
+                    _extract_base64_data(reference.base64)
+                )
+            else:
+                image = _extract_base64_data(
+                    convert_to_jpeg_for_character_keep(reference.base64)
+                )
+        except (ValueError, OSError, DecompressionBombError) as exc:
+            raise GenerateError(
+                "无法处理角色参考图片，请换一张可读取的图片", status_code=400
+            ) from exc
+
+        parameters["director_reference_images"] = [image]
+        parameters["director_reference_strength_values"] = [reference.strength]
         parameters["director_reference_information_extracted"] = [1.0]
-        
-        # 设置描述类型
-        if ck.keep_vibe:
-            # 保持角色+氛围
-            parameters["director_reference_descriptions"] = [{
+        mode = reference.effective_mode
+        parameters["director_reference_descriptions"] = [
+            {
                 "caption": {
-                    "base_caption": "character&style",
-                    "char_captions": []
+                    "base_caption": "costume" if mode == "outfit" else mode,
+                    "char_captions": [],
                 },
                 "use_coords": False,
                 "use_order": False,
-                "legacy_uc": False
-            }]
-        else:
-            # 仅保持角色
-            parameters["director_reference_descriptions"] = [{
-                "caption": {
-                    "base_caption": "character",
-                    "char_captions": []
-                },
-                "use_coords": False,
-                "use_order": False,
-                "legacy_uc": False
-            }]
-        
-        # 设置 Fidelity（映射到 secondary_strength）
-        parameters["director_reference_secondary_strength_values"] = [float(ck.strength)]
+                "legacy_uc": False,
+            }
+        ]
+        # V5 的网页客户端固定发送 0，V4.5 保留插件原有映射。
+        parameters["director_reference_secondary_strength_values"] = [
+            0.0 if is_v5 else reference.strength
+        ]
+        if is_v5:
+            parameters["params_version"] = 4
     
     # 处理多角色控制 - 转换为 v4_prompt 格式
     # 注意：这个功能在官方API中实现方式较复杂，暂时简化处理
@@ -514,7 +523,9 @@ async def generate_image(
         生成的图片字节数据
     """
     # 转换请求格式
-    request_body = _convert_req_to_official_format(req, opus_free_mode=opus_free_mode)
+    request_body = await asyncio.to_thread(
+        _convert_req_to_official_format, req, opus_free_mode=opus_free_mode
+    )
 
     parameters = request_body["parameters"]
     references = parameters.get("reference_image_multiple") or []

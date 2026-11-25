@@ -6,8 +6,14 @@ Keep handler modules thin by extracting repeated parameter merging and
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+from .image_library import LibraryImage
 from .models import Req
-from .params import req_model_assembler
+from .params import parse_req, req_model_assembler
+
+if TYPE_CHECKING:
+    from .config import Config
 
 
 def _falsy(value: str) -> bool:
@@ -222,6 +228,29 @@ def merge_nai_params(
     return "\n".join(merged_lines), wrappers, explicit_ids
 
 
+async def parse_llm_overrides(
+    merged_raw: str,
+    config: Config,
+    is_whitelisted: bool,
+    character_keep_image: str | None,
+) -> Req | None:
+    blocked_keys = {
+        "i2i", "vibe_transfer", "vibe_transfer_info_extract", "vibe_transfer_ref_strength",
+        "character_keep", "QR", "QK", "qr", "qk",
+    }
+    lines = [
+        line for line in merged_raw.splitlines()
+        if line.partition("=")[0] not in blocked_keys
+    ]
+    images = []
+    if character_keep_image:
+        lines.append("character_keep=true")
+        images.append(LibraryImage(character_keep_image))
+    if not lines:
+        return None
+    return await parse_req("\n".join(lines), images, config, is_whitelisted)
+
+
 def extract_batch_count(
     preset_contents: list[str],
     direct_text: str = "",
@@ -293,12 +322,7 @@ def apply_explicit_overrides(
     if "data" in explicit_ids:
         req.data = user_req.data
 
-    if (
-        "character_keep" in explicit_ids
-        and user_req.addition
-        and req.addition
-        and user_req.addition.character_keep
-    ):
+    if user_req.addition.character_keep:
         req.addition.character_keep = user_req.addition.character_keep
 
     if (

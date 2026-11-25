@@ -30,12 +30,10 @@ def format_generation_report(raw_input: str, req: Req) -> str:
                 f"vibe[{index}].info_extract={vibe.info_extract}, "
                 f"ref_strength={vibe.ref_strength}"
             )
-    if req.addition.character_keep:
+    if reference := req.addition.character_keep:
         params.append("character_keep=true")
-        params.append(
-            f"character_keep_vibe={req.addition.character_keep.keep_vibe}, "
-            f"strength={req.addition.character_keep.strength}"
-        )
+        params.append(f"character_keep_mode={reference.effective_mode}")
+        params.append(f"character_keep_strength={reference.strength}")
     return (
         "画图参数记录\n"
         f"原始输入：\n{raw_input or '(empty)'}\n\n"

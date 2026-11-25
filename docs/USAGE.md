@@ -352,7 +352,7 @@ c_k=角色参考
 对应的参数别名也可以使用：
 - `i2i=图库名称`：使用图库图片进行图生图
 - `vibe_transfer=图库名称` 或 `v_t=图库名称`：使用图库图片进行氛围转移；可重复填写以使用多张图片
-- `character_keep=图库名称`、`c_k=图库名称` 或 `ck=图库名称`：使用图库图片进行角色保持
+- `character_keep=图库名称`、`c_k=图库名称` 或 `ck=图库名称`：使用图库图片作为精准参考
 
 同一请求中仍不能同时使用 `vibe_transfer` 和 `character_keep`。
 首次使用预设、角色保持或图库资源生成成功后，插件会自动保存一张预览图；使用
@@ -455,14 +455,27 @@ vibe_transfer_info_extract=0.8
 > 官方接口不允许同时混合普通参考图和 Director Reference；如需使用角色保持，
 > 请移除 `vibe_transfer` 及其对应的参考图片。
 
-### 角色保持(character_keep)
-```
-nai 1girl
-character_keep=true
+### 精准参考（character_keep）
 
-[图片]
+```text
+nai
+model=nai5_full
+tag=1girl, standing
+c_k=true
+c_k_m=ctst
 ```
 
+随指令附上一张参考图，也可以回复含图消息。使用图库时，将 `c_k=true` 改为 `c_k=图库名称`。
+
+- `c_k_m=ctst` 或 `c_k_m=character&style` 同时参考角色和画风。
+- `c_k_m=ct` 或 `c_k_m=character` 仅参考角色。
+- `c_k_m=st` 或 `c_k_m=style` 仅参考画风。
+- `c_k_m=oft` 或 `c_k_m=outfit` 仅参考服装，需要 NAI5 完整版或精选版。
+
+- `c_k_m` 全名是 `character_keep_mode`，省略时默认 `character&style`。
+- 省略 `c_k_s` 时使用插件「默认值设置」里的「默认角色保持参考强度」，初始值为 0.5。
+- NAI4.5 完整版和精选版支持 `ct`、`ctst`、`st`，强度范围为 0–1。NAI5 完整版和精选版支持四种模式，强度范围为 0–5。NAI4 及更早的模型不支持精准参考。
+- 精准参考可在 `nai`、`nai画图` 和 `nai自动画图开` 中使用，也可写入预设。NovelAI 每张参考图另计 5 Anlas。精准参考和氛围转移请分开使用。
 
 ## 🖼️ 图片输出方式
 
@@ -646,9 +659,9 @@ role=D2|1girl, cool|bad anatomy
 | `QR` | 输出图片二维码 | `QR=true` 可单次开启；二维码编码图片分享链接，每张图片只发送一张 |
 | `QK` | 上传并分享夸克网盘链接 | `QK=true` 可单次开启；需完成夸克扫码登录 |
 | `role` | 角色/多角色 | 多角色控制 |
-| `character_keep` `c_k` | 角色保持/ck | 保持角色特征 |
-| `character_keep_vibe` `c_k_v` | 角色保持氛围 | true/false |
-| `character_keep_strength` `c_k_s` | 角色保持强度 | 0-1 |
+| `character_keep` `c_k` | 精准参考图片/ck | 附图或使用图库名称 |
+| `character_keep_mode` `c_k_m` | 精准参考模式 | `ct`、`ctst`（默认）、`st`，以及 NAI5 专用的 `oft` |
+| `character_keep_strength` `c_k_s` | 角色保持强度 | NAI4.5 为 0–1，NAI5 为 0–5，省略时读取插件配置 |
 | `nai预设列表` | 查看所有可用预设 | |
 | `nai预设查看` | 查看指定预设内容 | |
 | `nai预设添加` | 添加预设（管理员） | |
