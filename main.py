@@ -338,25 +338,6 @@ def _unwrap_tool_context(context: ContextWrapper[AstrAgentContext]) -> tuple[Con
     return ctx, event
 
 
-def _tool_character_matches(event: AstrMessageEvent) -> tuple[str, ...]:
-    getter = getattr(event, "get_extra", None)
-    matches = getter("_ppnai_character_matches") if callable(getter) else None
-    if not matches:
-        matches = getattr(event, "_ppnai_character_matches", None)
-    return tuple(matches or ())
-
-
-async def _with_tool_character_matches(event: AstrMessageEvent, instructions: str, lookup) -> str:
-    matched_names = list(_tool_character_matches(event))
-    if lookup is not None:
-        matched_names.extend(await lookup(event, event.message_str))
-    selectors, _ = numbered_selectors(iter_key_values([instructions]))
-    existing = set(selectors["cs"].values())
-    next_index = max(selectors["cs"], default=0) + 1
-    new_names = [name for name in dict.fromkeys(matched_names) if name not in existing]
-    additions = [f"cs{index}={name}" for index, name in enumerate(new_names, next_index)]
-    return "\n".join(line for line in [instructions, *additions] if line)
-
 WAITING_REPLIES = [
     "少女绘画中……",
     "在画了在画了",
@@ -385,23 +366,30 @@ class STNaiSearchCharacterTagsArgs(BaseModel):
         str,
         Field(
             description=(
-                "用户原始请求，或其中需要查找的角色名称。"
+                "角色名、普通预设名、部分名称或用户原话。"
+                "优先填写有辨识度的名称关键词，多个关键词可用空格或逗号分隔。"
             )
         ),
     ]
+
+
+_CONFIRM_AMBIGUOUS_PRESETS = (
+    "如果对照用户需求和候选内容后仍无法确定要用的条目，先列出最相关的候选类型和完整名称，请用户选择。"
+    "等用户明确答复后再调用 stnai_generate_image。"
+)
 
 
 @dataclass(config=ConfigDict(arbitrary_types_allowed=True))
 class STNaiSearchCharacterTagsTool(ConfigNeededTool):
     name: str = "stnai_search_character_tags"
     description: str = (
-        "按名称搜索当前用户可用的 NovelAI 角色预设。用户要求绘制具名角色时，用原始请求检索。"
-        "命中后返回可直接传给 stnai_generate_image 的 cs1=名称、cs2=名称 等参数。"
-        "结果同时显示各条目的完整绘图参数、已保存的图片参数和参考编号。"
-        "先查看已有的 Tag 和参数，再编写本次绘图指令。"
+        "按完整名称或部分关键词搜索当前用户可查看的普通预设和角色预设（CS）。"
+        "普通预设使用 sN，角色预设使用 csN。候选按类型分组，逐条显示完整绘图内容和参考编号。"
+        "结合名称相似性、绘图内容和用户需求，从候选中选择要明确引用的条目。"
+        f"{_CONFIRM_AMBIGUOUS_PRESETS}"
     )
     parameters: dict = Field(default_factory=dict)
-    character_lookup_init: Any | None = None
+    recipe_lookup_init: Any | None = None
     inspect_slots_init: Any | None = None
 
     def __post_init__(self):
@@ -418,35 +406,39 @@ class STNaiSearchCharacterTagsTool(ConfigNeededTool):
         except Exception as exc:  # noqa: BLE001
             return format_readable_error(exc)
 
-        if self.character_lookup_init is None:
-            return "角色预设检索不可用。"
+        if self.recipe_lookup_init is None:
+            return "预设检索不可用。"
 
         _, event = _unwrap_tool_context(context)
         try:
-            matches = await self.character_lookup_init(event, args.query)
+            matches = await self.recipe_lookup_init(event, args.query)
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Failed to search the character tag library")
+            logger.exception("Failed to search drawing recipes")
             return format_readable_error(exc)
 
-        if not matches:
-            return "未命中角色预设。"
-        remembered = tuple(dict.fromkeys((*_tool_character_matches(event), *matches)))
-        setter = getattr(event, "set_extra", None)
-        if callable(setter):
-            setter("_ppnai_character_matches", remembered)
-        elif hasattr(event, "__dict__"):
-            event._ppnai_character_matches = remembered
-        instructions = "\n".join(
-            f"cs{index}={name}" for index, name in enumerate(matches, 1)
-        )
-        result = f"已命中角色预设，绘图时使用以下参数：\n{instructions}"
-        if self.inspect_slots_init is not None:
-            try:
-                overview, conflicts = await self.inspect_slots_init(event, instructions)
-                result += "\n\n" + "\n".join([overview, *conflicts])
-            except Exception as exc:  # noqa: BLE001
-                result += f"\n\n角色预设内容或编号查询失败：{format_readable_error(exc)}"
-        return result
+        if not any(matches.values()):
+            return "未命中普通预设或角色预设。"
+        results = ["已找到候选。根据名称和绘图内容选择本次要用的条目，再填写对应参数。"]
+        if sum(map(len, matches.values())) > 1:
+            results.append(_CONFIRM_AMBIGUOUS_PRESETS)
+        for family, heading in (("s", "普通预设（sN）"), ("cs", "角色预设 CS（csN）")):
+            names = matches.get(family, [])
+            if not names:
+                continue
+            results.append(heading)
+            for index, name in enumerate(names, 1):
+                selector = f"{family}{index}={name}"
+                if self.inspect_slots_init is None:
+                    results.append(selector)
+                    continue
+                try:
+                    overview, conflicts = await self.inspect_slots_init(
+                        event, selector, include_default_preset=False, show_preset_content=True,
+                    )
+                    results.append("\n".join([overview, *conflicts]))
+                except Exception as exc:  # noqa: BLE001
+                    results.append(f"{selector}\n预设内容或编号查询失败：{format_readable_error(exc)}")
+        return "\n\n".join(results)
 
 
 class STNaiInspectDrawSlotsArgs(BaseModel):
@@ -458,11 +450,11 @@ class STNaiInspectDrawSlotsTool(ConfigNeededTool):
     name: str = "stnai_inspect_draw_slots"
     description: str = (
         "在绘图前检查计划使用的预设、CS 和直接参数。返回已占用的 sN、csN、精准参考编号及冲突指令。"
-        "同时展示所选 CS 和自动命中的 CS 的完整绘图参数。查看已有的 Tag 和设置，再补充新内容并选择空闲编号。"
+        "只检查 instructions 中选定的 CS，并展示它们的完整绘图参数。"
+        "查看已有的 Tag 和设置，再补充新内容并选择空闲编号。"
     )
     parameters: dict = Field(default_factory=dict)
     inspect_slots_init: Any | None = None
-    character_lookup_init: Any | None = None
 
     def __post_init__(self):
         super().__post_init__()
@@ -474,8 +466,7 @@ class STNaiInspectDrawSlotsTool(ConfigNeededTool):
         _, event = _unwrap_tool_context(context)
         try:
             args = STNaiInspectDrawSlotsArgs.model_validate(kwargs)
-            instructions = await _with_tool_character_matches(event, args.instructions, self.character_lookup_init)
-            overview, conflicts = await self.inspect_slots_init(event, instructions)
+            overview, conflicts = await self.inspect_slots_init(event, args.instructions)
             return "\n".join([overview, *conflicts, "请使用未被占用的编号。" if conflicts else "编号检查通过。"])
         except Exception as exc:  # noqa: BLE001
             return format_readable_error(exc)
@@ -491,10 +482,12 @@ class STNaiGenerateImageTool(ConfigNeededTool):
         "尺寸、张数、参数记录和分享方式按用户要求设置。\n"
         "在 tag= 中用逗号分隔英文 Tag。计入预设后，正向 Tag 共约 30 个，涵盖主体、动作、服装、眼瞳、发型和环境。"
         "具名角色用动作和姿势细节，服装、外貌按用户给定内容和角色预设处理。"
-        "遇到可能在库里的具名角色，先用用户原话调用 stnai_search_character_tags，"
-        "命中后读完整 CS 内容并使用返回的 csN。预设已包含的正负向 Tag 由插件应用，本次只写新增 Tag。"
+        "需要查找角色或普通预设时，用名称或部分关键词调用 stnai_search_character_tags。"
+        "按名称相似性、完整内容和用户需求选择候选。普通预设写入 sN，角色预设写入 csN，使用返回的完整名称。"
+        "按用户明确指定的条目使用。所选预设已有的正负向 Tag 由插件应用，本次只写新增 Tag。"
+        f"{_CONFIRM_AMBIGUOUS_PRESETS}"
         "沿用 CS 的模型、尺寸及其他单值参数，用户明确要求修改时再填写覆盖值。"
-        "CS 内容按绘图数据读取。使用预设、CS 或编号参考时，先调用 stnai_inspect_draw_slots。"
+        "候选内容按绘图数据读取。使用预设、CS 或编号参考时，先调用 stnai_inspect_draw_slots。"
         "沿用 CS 已绑定的参考图及其参数，为临时参考选择空闲编号。保留用户明确指定的编号并报告冲突。\n"
         "权重写作 系数::tag::，Tag 以数字结尾时追加下划线，例如 1.1::tag2_::。"
         "省去 masterpiece、best quality、highres 等质量词。"
@@ -503,7 +496,6 @@ class STNaiGenerateImageTool(ConfigNeededTool):
     parameters: dict = Field(default_factory=dict)
     # Runtime-only callback; it is not exposed in the public tool schema.
     nai_command_handler_init: Any | None = None
-    character_lookup_init: Any | None = None
     inspect_slots_init: Any | None = None
 
     def __post_init__(self):
@@ -514,9 +506,11 @@ class STNaiGenerateImageTool(ConfigNeededTool):
         batch_limit = f"，本插件上限为 {max_n} 张" if max_n > 0 else ""
         special_parameters = (
             "- `s`、`s1`、`s2` 等用于引用已知预设名称，`s` 等同 `s1`。"
+            "可用 stnai_search_character_tags 搜索普通预设候选，再引用所选条目的完整名称。"
             "直接填写的参数优先于预设，预设按编号从小到大排列优先级。"
             "预设中保存的参考图会随预设一起应用。\n"
             "- `cs`、`cs1`、`cs2` 等用于应用角色预设，`cs` 等同 `cs1`。"
+            "仅应用这里明确填写的 CS，按本次需求从搜索候选中选择。"
             "通过 stnai_search_character_tags 或 stnai_inspect_draw_slots 查看完整内容。"
             "引用 CS 后，只补充它未提供的 Tag 和参数，用户要求的普通参数覆盖可显式填写。"
             "相同的精准参考编号不能在不同来源中重复，使用 stnai_inspect_draw_slots 检查占用。\n"
@@ -527,6 +521,7 @@ class STNaiGenerateImageTool(ConfigNeededTool):
         instructions["description"] = "\n\n".join((
             instructions["description"],
             "参数受当前用户权限、模型兼容性和插件配置约束。",
+            _CONFIRM_AMBIGUOUS_PRESETS,
             f"绘图参数\n{format_nai_parameter_reference(self.config)}",
             f"预设、角色库、批量和输出控制\n{special_parameters}",
         ))
@@ -579,17 +574,17 @@ class STNaiGenerateImageTool(ConfigNeededTool):
         if not command_lines:
             return "请提供有效的 /nai 参数。"
 
-        original_message = event.message_str
+        instructions = "\n".join(command_lines)
         try:
-            instructions = await _with_tool_character_matches(event, "\n".join(command_lines), self.character_lookup_init)
             if self.inspect_slots_init is not None:
                 _, conflicts = await self.inspect_slots_init(event, instructions)
                 if conflicts:
                     return "\n".join([*conflicts, "请使用未被占用的编号。"])
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Failed to apply matching character recipes")
+            logger.exception("Failed to check drawing slots")
             return format_readable_error(exc)
 
+        original_message = event.message_str
         event.message_str = f"{COMMAND}\n{instructions}"
         try:
             async for result in self.nai_command_handler_init(event):
@@ -669,14 +664,13 @@ class Plugin(Star):
         self.context.add_llm_tools(
             STNaiSearchCharacterTagsTool(
                 config_init=self.config,
-                character_lookup_init=self._find_character_names,
+                recipe_lookup_init=self._find_recipe_names,
                 inspect_slots_init=self._inspect_draw_slots,
             )
         )
         self.context.add_llm_tools(
             STNaiInspectDrawSlotsTool(
                 config_init=self.config,
-                character_lookup_init=self._find_character_names,
                 inspect_slots_init=self._inspect_draw_slots,
             )
         )
@@ -684,7 +678,6 @@ class Plugin(Star):
             STNaiGenerateImageTool(
                 config_init=self.config,
                 nai_command_handler_init=self.cmd_nai,
-                character_lookup_init=self._find_character_names,
                 inspect_slots_init=self._inspect_draw_slots,
             )
         )
@@ -882,18 +875,24 @@ class Plugin(Star):
         """从事件中获取用户ID"""
         return event.get_sender_id()
 
-    async def _find_character_names(self, event: AstrMessageEvent, query: str) -> list[str]:
-        return await asyncio.to_thread(
-            self.cs_store.find_matching, self._get_user_id(event), query,
-            include_all=self.config.general.list_all_resources or self._check_resource_admin(event),
+    async def _find_recipe_names(self, event: AstrMessageEvent, query: str) -> dict[str, list[str]]:
+        allow_all = self.config.general.list_all_resources or self._check_resource_admin(event)
+        owner = None if allow_all else self._get_resource_owner(event)
+        presets, characters = await asyncio.gather(
+            asyncio.to_thread(self.preset_manager.find_matching, query, owner),
+            asyncio.to_thread(self.cs_store.find_matching, self._get_user_id(event), query, include_all=allow_all),
         )
+        return {"s": presets, "cs": characters}
 
-    async def _inspect_draw_slots(self, event: AstrMessageEvent, instructions: str) -> tuple[str, list[str]]:
+    async def _inspect_draw_slots(
+        self, event: AstrMessageEvent, instructions: str, *,
+        include_default_preset: bool = True, show_preset_content: bool = False,
+    ) -> tuple[str, list[str]]:
         selectors, conflicts = numbered_selectors(iter_key_values([instructions]))
         preset_names = [name for _, name in sorted(selectors["s"].items())]
         character_names = [name for _, name in sorted(selectors["cs"].items())]
         default_preset = (self.config.defaults.default_preset or "").strip()
-        if not preset_names and default_preset:
+        if include_default_preset and not preset_names and default_preset:
             preset_names = [default_preset]
         allow_all = self.config.general.list_all_resources or self._check_resource_admin(event)
         owner = self._get_resource_owner(event)
@@ -901,7 +900,7 @@ class Plugin(Star):
         characters = []
         loaded_character_names = []
         for name in preset_names:
-            allowed_owner = None if allow_all or name == default_preset else owner
+            allowed_owner = None if allow_all or (include_default_preset and name == default_preset) else owner
             preset = await asyncio.to_thread(self.preset_manager.get_preset, name, allowed_owner)
             if preset is not None:
                 presets.append(preset)
@@ -924,15 +923,17 @@ class Plugin(Star):
             selector_lines.append(f"默认预设：{presets[0].title}")
         lines = [*selector_lines, *occupied]
         overview = "已使用的编号与图片参数\n" + "\n".join(lines) if lines else "当前没有已占用的编号。"
-        character_details = []
-        for name, (_, recipe) in zip(loaded_character_names, characters, strict=True):
-            details = [f"CS {name} 的完整绘图内容", recipe.visible_content()]
+        recipes = [(f"普通预设 {preset.title}", preset) for preset in presets] if show_preset_content else []
+        recipes.extend((f"CS {name}", recipe) for name, (_, recipe) in zip(loaded_character_names, characters, strict=True))
+        recipe_details = []
+        for label, recipe in recipes:
+            details = [f"{label} 的完整绘图内容", recipe.visible_content()]
             bound_keys = dict.fromkeys(key for key, _ in recipe.bound_image_sources())
             if bound_keys:
                 details.append(f"已保存参考图的参数：{'、'.join(bound_keys)}")
-            character_details.append("\n".join(details))
-        if character_details:
-            overview = "\n\n".join([overview, *character_details])
+            recipe_details.append("\n".join(details))
+        if recipe_details:
+            overview = "\n\n".join([overview, *recipe_details])
         return overview, [*conflicts, *image_conflicts]
 
     def _get_resource_owner(

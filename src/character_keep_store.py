@@ -8,6 +8,7 @@ import re
 from threading import Lock
 
 from .drawing_recipe import DrawingRecipe, write_recipe_file
+from .utils import match_resource_names
 
 
 TAG_BLOCK_PATTERN = re.compile(r"<tag>\s*(.+?)\s*</tag>", re.DOTALL | re.IGNORECASE)
@@ -114,20 +115,13 @@ class CharacterKeepStore:
     def find_matching(
         self, user_id: str, query: str, *, include_all: bool = False
     ) -> list[str]:
-        """Find saved character names mentioned in a query (case-insensitive)."""
-        normalized_query = query.casefold()
-        matches: list[tuple[int, str]] = []
+        """Find visible character recipes by full name or partial keywords."""
         names = set(self.list_names(user_id))
         if include_all:
             for owner_id, owner_names in self.list_grouped().items():
                 if owner_id != user_id:
                     names.update(owner_names)
-        for name in names:
-            position = normalized_query.find(name.casefold())
-            if position >= 0:
-                matches.append((position, name))
-        matches.sort(key=lambda match: (match[0], match[1]))
-        return [name for _, name in matches]
+        return match_resource_names(names, query)
 
     def write(self, user_id: str, name: str, content: str | DrawingRecipe, *, overwrite: bool) -> None:
         path = self._get_entry_path(user_id, name)

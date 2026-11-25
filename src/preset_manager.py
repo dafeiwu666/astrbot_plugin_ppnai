@@ -8,6 +8,7 @@ from threading import RLock
 from pydantic import BaseModel, Field
 
 from .drawing_recipe import DrawingRecipe, write_recipe_file
+from .utils import match_resource_names
 
 
 class Preset(DrawingRecipe):
@@ -68,6 +69,10 @@ class PresetManager:
                 continue
             grouped.setdefault(preset.owner_id, []).append(title)
         return {key: sorted(value) for key, value in sorted(grouped.items())}
+
+    def find_matching(self, query: str, owner_id: str | None = None) -> list[str]:
+        titles = (title for group in self.list_grouped(owner_id).values() for title in group)
+        return match_resource_names(titles, query)
     
     def get_preset(
         self, title: str, owner_id: str | None = None
